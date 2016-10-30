@@ -2096,9 +2096,11 @@ void CameraService::loadSound() {
 //!++
 void CameraService::loadSoundImp() {
     LOG1("[CameraService::loadSoundImp] E");
+/*
     mSoundPlayer[SOUND_SHUTTER] = newMediaPlayer("/system/media/audio/ui/camera_click.ogg");
     mSoundPlayer[SOUND_RECORDING_START] = newMediaPlayer("/system/media/audio/ui/VideoRecord.ogg");
     mSoundPlayer[SOUND_RECORDING_STOP] = newMediaPlayer("/system/media/audio/ui/VideoStop.ogg");
+*/
     LOG1("[CameraService::loadSoundImp] X");
 }
 
