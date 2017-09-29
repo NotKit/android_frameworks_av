@@ -782,19 +782,6 @@ status_t OMXNodeInstance::useBuffer(
         return BAD_VALUE;
     }
 
-    if (!mSailed) {
-        ALOGE("b/35467458");
-        android_errorWriteLog(0x534e4554, "35467458");
-        return BAD_VALUE;
-    }
-
-    if (mMetadataType[portIndex] == kMetadataBufferTypeInvalid
-            && mGraphicBufferEnabled[portIndex]) {
-        ALOGE("b/62948670");
-        android_errorWriteLog(0x534e4554, "62948670");
-        return INVALID_OPERATION;
-    }
-
     // metadata buffers are not connected cross process
     BufferMeta *buffer_meta;
     bool isMeta = mMetadataType[portIndex] != kMetadataBufferTypeInvalid;
@@ -1145,12 +1132,6 @@ status_t OMXNodeInstance::allocateBuffer(
         void **buffer_data) {
     Mutex::Autolock autoLock(mLock);
 
-    if (!mSailed) {
-        ALOGE("b/35467458");
-        android_errorWriteLog(0x534e4554, "35467458");
-        return BAD_VALUE;
-    }
-
     BufferMeta *buffer_meta = new BufferMeta(size, portIndex);
 
     OMX_BUFFERHEADERTYPE *header;
@@ -1189,12 +1170,6 @@ status_t OMXNodeInstance::allocateBufferWithBackup(
         OMX::buffer_id *buffer, OMX_U32 allottedSize, OMX_BOOL crossProcess) {
     Mutex::Autolock autoLock(mLock);
     if (allottedSize > params->size() || portIndex >= NELEM(mNumPortBuffers)) {
-        return BAD_VALUE;
-    }
-
-    if (!mSailed) {
-        ALOGE("b/35467458");
-        android_errorWriteLog(0x534e4554, "35467458");
         return BAD_VALUE;
     }
 
