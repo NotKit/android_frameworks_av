@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -235,7 +241,13 @@ status_t ESDS::parseDecoderConfigDescriptor(size_t offset, size_t size) {
     }
 
     if (tag != kTag_DecoderSpecificInfo) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGW("No Decoder Specific Info(0x05) in esds");
+    if (mObjectTypeIndication != 0x6B && mObjectTypeIndication != 0x69)
+        return ERROR_UNSUPPORTED;
+#else
         return ERROR_MALFORMED;
+#endif
     }
 
     mDecoderSpecificOffset = sub_offset;

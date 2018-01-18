@@ -24,10 +24,13 @@
 #include <binder/Status.h>
 #include <utils/String8.h>
 
+#include <camera/IMetadataCallbacks.h>
+
 namespace android {
 
 class IGraphicBufferProducer;
 class Surface;
+class IMetadataCallbacks;
 
 namespace hardware {
 
@@ -106,6 +109,9 @@ public:
 
     // cancel auto focus
     virtual status_t        cancelAutoFocus() = 0;
+//!++
+    virtual status_t        setMetadataCallback(sp<IMetadataCallbacks>& cb) = 0;
+//!--
 
     /*
      * take a picture.
@@ -142,6 +148,7 @@ public:
 class BnCamera: public BnInterface<ICamera>
 {
 public:
+    virtual status_t    setMetadataCallback(sp<IMetadataCallbacks>& cb) { (void)(cb); return -1; };
     virtual status_t    onTransact( uint32_t code,
                                     const Parcel& data,
                                     Parcel* reply,

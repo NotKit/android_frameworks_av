@@ -32,6 +32,10 @@
 #include "ResourceManagerService.h"
 #include "ServiceLog.h"
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <utils/CallStack.h>
+#endif
+
 namespace android {
 
 template <typename T>
@@ -205,6 +209,11 @@ void ResourceManagerService::addResource(
             pid, (long long) clientId, getString(resources).string());
     mServiceLog->add(log);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+     ALOGD("ResourceManagerService:addResource");
+     //CallStack stack("    ");
+#endif
+
     Mutex::Autolock lock(mLock);
     if (!mProcessInfo->isValidPid(pid)) {
         ALOGE("Rejected addResource call with invalid pid.");
@@ -222,6 +231,11 @@ void ResourceManagerService::removeResource(int pid, int64_t clientId) {
             "removeResource(pid %d, clientId %lld)",
             pid, (long long) clientId);
     mServiceLog->add(log);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("ResourceManagerService:removeResource");
+    //CallStack stack("    ");
+#endif
 
     Mutex::Autolock lock(mLock);
     if (!mProcessInfo->isValidPid(pid)) {

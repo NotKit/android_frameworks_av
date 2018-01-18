@@ -51,7 +51,8 @@ LOCAL_SRC_FILES += \
 	camera2/SubmitInfo.cpp \
 	CameraBase.cpp \
 	CameraUtils.cpp \
-	VendorTagDescriptor.cpp
+	VendorTagDescriptor.cpp \
+	IMetadataCallbacks.cpp
 
 LOCAL_SHARED_LIBRARIES := \
 	libcutils \
@@ -75,6 +76,9 @@ LOCAL_EXPORT_C_INCLUDE_DIRS := \
 
 LOCAL_CFLAGS += -Werror -Wall -Wextra
 
+#//!++
+    LOCAL_SRC_FILES += mediatek/Camera.cpp
+#//!--
 LOCAL_MODULE:= libcamera_client
 
 include $(BUILD_SHARED_LIBRARY)

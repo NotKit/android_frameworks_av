@@ -132,6 +132,14 @@ private:
     void notifyResumeCompleteIfNecessary();
 
     DISALLOW_EVIL_CONSTRUCTORS(Decoder);
+#ifdef MTK_AOSP_ENHANCEMENT
+private:
+    void setRenderBufferInfo(size_t bufferIx, const sp<AMessage> &msgFrom);
+    void handleError(int32_t err, bool isACodecErr);    // for ACodec error notify
+    bool mIsSMPL;
+    int64_t mInputReadBegin; // just for debug input read time
+    bool mLogSwitch;
+#endif
 };
 
 }  // namespace android

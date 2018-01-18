@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2007, The Android Open Source Project
 **
@@ -35,7 +40,43 @@
 // FIXME This is actually unity gain, which might not be max in future, expressed in U.12
 #define MAX_GAIN_INT AudioMixer::UNITY_GAIN_INT
 
+//<MTK_AUDIOMIXER_ENABLE_LIMITER
+extern "C" {
+#include "Limiter_exp.h"
+}
+//MTK_AUDIOMIXER_ENABLE_LIMITER>
+
+#ifdef TIME_STRETCH_ENABLE
+#include "AudioMTKTimeStretch.h"
+#endif
+#ifdef MTK_BESSURROUND_ENABLE
+#include "AudioMTKSurroundMix.h"
+#endif
+
+#include "AudioCompFltCustParam.h"
+extern "C" {
+#include "MtkAudioLoud.h"
+}
+
+#ifdef MTK_HIFI_AUDIO
+extern "C" {
+#include  "MtkAudioSrc.h"
+}
+#endif
+
+
 namespace android {
+#ifdef MTK_AUDIO
+enum output_samplerate
+{
+    OUTPUT_RATE_44_1 = 44100,
+    OUTPUT_RATE_48 = 48000,
+    OUTPUT_RATE_88_2 = 88200,
+    OUTPUT_RATE_96 = 96000,
+    OUTPUT_RATE_176_4 = 176400,
+    OUTPUT_RATE_192 = 192000,
+};
+#endif
 
 // ----------------------------------------------------------------------------
 
@@ -75,7 +116,10 @@ public:
         RAMP_VOLUME     = 0x3002, // ramp to new volume
         VOLUME          = 0x3003, // don't ramp
         TIMESTRETCH     = 0x3004,
-
+        //<MTK_AUDIO_ADD
+        DRC             = 0x3010, // dynamic range control
+        SURROUND        = 0x3011,
+        //MTK_AUDIO_ADD>
         // set Parameter names
         // for target TRACK
         CHANNEL_MASK    = 0x4000,
@@ -85,6 +129,15 @@ public:
         DOWNMIX_TYPE    = 0X4004,
         MIXER_FORMAT    = 0x4005, // AUDIO_FORMAT_PCM_(FLOAT|16_BIT)
         MIXER_CHANNEL_MASK = 0x4006, // Channel mask for mixer output
+        //<MTK_AUDIO_ADD
+        DO_TIMESTRETCH  = 0x4007,
+        //MTK_AUDIO_ADD>
+        STREAM_TYPE     = 0x4008,
+        STEREO2MONO     = 0x4009,
+        //<MTK_CROSSMOUNT_MULTI_CH_SUPPORT
+        CROSSMOUNT_LOCALPLAY = 0x4010,
+        SPEAKER_ROLE    = 0x4011,
+        //MTK_CROSSMOUNT_MULTI_CH_SUPPORT>
         // for target RESAMPLE
         SAMPLE_RATE     = 0x4100, // Configure sample rate conversion on this track name;
                                   // parameter 'value' is the new sample rate in Hz.
@@ -97,6 +150,9 @@ public:
                                   // This clears out the resampler's input buffer.
         REMOVE          = 0x4102, // Remove the sample rate converter on this track name;
                                   // the track is restored to the mix sample rate.
+        //<MTK_AUDIO_ADD
+        ADAPTOR         = 0x4103,
+        //MTK_AUDIO_ADD>
         // for target RAMP_VOLUME and VOLUME (8 channels max)
         // FIXME use float for these 3 to improve the dynamic range
         VOLUME0         = 0x4200,
@@ -105,8 +161,22 @@ public:
         // for target TIMESTRETCH
         PLAYBACK_RATE   = 0x4300, // Configure timestretch on this track name;
                                   // parameter 'value' is a pointer to the new playback rate.
+        //<MTK_AUDIO_ADD
+        DEVICE          = 0x4F00, // output device for DRC
+        UPDATE          = 0x4F01, // update parameter for DRC
+        BESSURND_ENABLE = 0x4F02, //BesSurround enable
+        BESSURND_MODE   = 0x4F03,
+        BESSURND_ENABLE_RAMP = 0x4F04
+        //MTK_AUDIO_ADD>
     };
-
+//<MTK_CROSSMOUNT_MULTI_CH_SUPPORT
+    enum CROSS_MOUNT_SPEAKER_ROLE {
+        CROSS_MOUNT_SPEAKER_ROLE_NONE = -1,
+        CROSS_MOUNT_SPEAKER_ROLE_ORIGINAL = 0,
+        CROSS_MOUNT_SPEAKER_ROLE_L_ONLY = 1,
+        CROSS_MOUNT_SPEAKER_ROLE_R_ONLY = 2,
+        };
+//MTK_CROSSMOUNT_MULTI_CH_SUPPORT>
 
     // For all APIs with "name": TRACK0 <= name < TRACK0 + MAX_NUM_TRACKS
 
@@ -136,6 +206,9 @@ public:
         switch (format) {
         case AUDIO_FORMAT_PCM_8_BIT:
         case AUDIO_FORMAT_PCM_16_BIT:
+        //MTK added
+        case AUDIO_FORMAT_PCM_8_24_BIT:
+        //MTK added
         case AUDIO_FORMAT_PCM_24_BIT_PACKED:
         case AUDIO_FORMAT_PCM_32_BIT:
         case AUDIO_FORMAT_PCM_FLOAT:
@@ -145,6 +218,16 @@ public:
         }
     }
 
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    // UI Dynamic Control DRC
+    void setDRCEnable(bool enable) { mUIDRCEnable = enable; }
+    void releaseDRC(int name);
+#endif
+
+    //<MTK_AUDIOMIXER_ENABLE_LIMITER
+    static const char* const keyLmiterEnable;
+    static void setLimiterEnable(bool enable) { mLimiterEnable = enable; };
+    //MTK_AUDIOMIXER_ENABLE_LIMITER>
 private:
 
     enum {
@@ -166,9 +249,18 @@ private:
     struct state_t;
     struct track_t;
 
+#ifdef TIME_STRETCH_ENABLE
+    class MTKTimeStretchBufferProvider;
+#endif
+
     typedef void (*hook_t)(track_t* t, int32_t* output, size_t numOutFrames, int32_t* temp,
                            int32_t* aux);
+
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    static int BLOCKSIZE;
+#else
     static const int BLOCKSIZE = 16; // 4 cache lines
+#endif
 
     struct track_t {
         uint32_t    needs;
@@ -237,6 +329,7 @@ private:
         PassthruBufferProvider*  mReformatBufferProvider; // provider wrapper for reformatting.
         PassthruBufferProvider*  downmixerBufferProvider; // wrapper for channel conversion.
         PassthruBufferProvider*  mPostDownmixReformatBufferProvider;
+        bool mTrackPlayed; // check if track started yet, if track not start, no ramp for 16x
         PassthruBufferProvider*  mTimestretchBufferProvider;
 
         int32_t     sessionId;
@@ -276,6 +369,72 @@ private:
         void        unprepareForReformat();
         bool        setPlaybackRate(const AudioPlaybackRate &playbackRate);
         void        reconfigureBufferProviders();
+#ifdef MTK_BESSURROUND_ENABLE
+        status_t prepareTrackForSurroundMix();
+        void unprepareTrackForSurroundMix();
+#endif
+#ifdef TIME_STRETCH_ENABLE
+        PassthruBufferProvider* mMTKTimestretchBufferProvider;
+        status_t initTrackMTKTimeStretch(int ratio);
+        void unprepareTrackForMTKTimeStretch();
+        status_t prepareTrackForMTKTimeStretch(int framecount, int ratio);
+#endif
+
+        //<MTK_AUDIO_ADD
+        template <int MIXTYPE>
+        bool        doPostProcessing(void *buffer, audio_format_t format, size_t frameCount);
+
+        //  Stereo 2 Mono
+        BLOUD_S2M_MODE_ENUM      mSteroToMono;
+        bool mPreVolumeValid[MAX_NUM_VOLUMES];
+        bool mPreAuxValid;
+        audio_stream_type_t      mStreamType;
+        //<MTK_CROSSMOUNT_MULTI_CH_SUPPORT
+        bool mCrossMountLocalPlayback;
+        CROSS_MOUNT_SPEAKER_ROLE mCrossMountSpeakerRole;
+        //MTK_CROSSMOUNT_MULTI_CH_SUPPORT>
+
+        uint32_t mDevSampleRate;
+        //MTK_AUDIO_ADD>
+
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+        bool                     mDRCEnable;
+        bool                     mDRCState;
+        MtkAudioLoud             *mpDRCObj;
+        state_t                  *mState;
+
+        void        setDRCHandler(audio_devices_t device, uint32_t sampleRate);
+        void        applyDRC(void *ioBuffer, uint32_t SampleSize, int32_t *tempBuffer,
+                        audio_format_t process_format, int process_channel);
+        void        updateDRCParam(int devSampleRate);
+        void        resetDRC();
+        bool        checkDRCEnable();
+#endif
+#ifdef MTK_BESSURROUND_ENABLE
+        AudioMTKSurroundDownMix *mSurroundMixer;
+        bool mSurroundEnable;
+        bool mSurroundMode;
+        int32_t* mDownMixBuffer;        // pointer to mState's downmMixBuffer
+        //void setDevice(audio_devices_t device);
+        //void onBufferUnderflow();
+#endif
+#ifdef MTK_HIFI_AUDIO
+        /**
+         * Bli SRC
+         */
+        bool             mBliSrcAdaptorState;
+        MtkAudioSrc*     mBliSrcDown;
+        MtkAudioSrc*     mBliSrcUp;
+        MtkAudioSrc*     mBliSrcAdaptor;
+
+        int8_t           mBliSrcAdaptorShift;
+        char*            mBliSrcOutputBuffer;
+        int              mBliSrcOutputBufferSize;
+
+        status_t         initBliSrc();
+        status_t         deinitBliSrc();
+        status_t         doBliSrc(MtkAudioSrc* mBliSrc, void *pInBuffer, uint32_t inBytes, void **ppOutBuffer, uint32_t *pOutBytes);
+#endif
     };
 
     typedef void (*process_hook_t)(state_t* state);
@@ -292,8 +451,50 @@ private:
         int32_t         reserved[1];
         // FIXME allocate dynamically to save some memory when maxNumTracks < MAX_NUM_TRACKS
         track_t         tracks[MAX_NUM_TRACKS] __attribute__((aligned(32)));
+        //<MTK_AUDIO_ADD
+        int32_t         *nonResampleTemp;
+        //MTK_AUDIO_ADD>
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+        bool            mDRCSupport;
+        int32_t         *pDRCTempBuffer;
+        uint32_t        mSampleRate;
+#endif
+        //<MTK_AUDIOMIXER_ENABLE_LIMITER
+        Limiter_Handle        *mpLimiterObj;
+        Limiter_RuntimeStatus mLimiter_status;
+        uint8_t               *mpLimiterInternalBuffer;
+        uint8_t               *mpLimiterTempBuffer;
+        //MTK_AUDIOMIXER_ENABLE_LIMITER>
+
+#ifdef MTK_BESSURROUND_ENABLE
+        int32_t         *downMixBuffer;
+#endif
     };
 
+
+#ifdef TIME_STRETCH_ENABLE
+    class MTKTimeStretchBufferProvider : public PassthruBufferProvider {
+    public:
+        virtual status_t getNextBuffer(Buffer* buffer);
+        virtual void releaseBuffer(Buffer* buffer);
+        MTKTimeStretchBufferProvider(int framecount, track_t* pTrack);
+        virtual ~MTKTimeStretchBufferProvider();
+        virtual status_t TimeStretchConfig(int ratio) ;
+
+        AudioBufferProvider* mTrackBufferProvider;
+        AudioBufferProvider* mInputBufferProvider;
+        AudioMTKTimeStretch* mTimeStretchHandle;
+        effect_config_t    mTimeStretchConfig;
+        AudioBufferProvider::Buffer mBuffer;
+        short* mOutBuffer;
+        short* mInBuffer;
+        size_t mOutframecount; // allocated outbuffer size
+        int mOutRemain;
+        //effect_handle_t    mDownmixHandle;
+        //effect_config_t    mDownmixConfig;
+   };
+   static bool         isTimeStretchCapable;
+#endif
     // bitmask of allocated track names, where bit 0 corresponds to TRACK0 etc.
     uint32_t        mTrackNames;
 
@@ -302,6 +503,9 @@ private:
     const uint32_t  mConfiguredNames;
 
     const uint32_t  mSampleRate;
+#ifdef MTK_HIFI_AUDIO
+    static int32_t BesSurroundTrackCount;
+#endif
 
     NBLog::Writer   mDummyLog;
 public:
@@ -383,6 +587,16 @@ private:
             audio_format_t mixerInFormat, audio_format_t mixerOutFormat);
     static hook_t getTrackHook(int trackType, uint32_t channelCount,
             audio_format_t mixerInFormat, audio_format_t mixerOutFormat);
+
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    // UI Dynamic Control DRC
+    static bool mUIDRCEnable;
+#endif
+    //<MTK_AUDIOMIXER_ENABLE_LIMITER
+    static bool mLimiterEnable;
+    static void applyLimiter(state_t* state, size_t framecount, audio_format_t MixerInFormat,
+    uint32_t MixerChannelCount, uint32_t sampleRate, int32_t* outTemp, int trackCount);
+    //MTK_AUDIOMIXER_ENABLE_LIMITER>
 };
 
 // ----------------------------------------------------------------------------

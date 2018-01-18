@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -90,8 +95,36 @@ private:
     void addSyncPoint_l(const ATSParser::SyncEvent &event);
 
     DISALLOW_EVIL_CONSTRUCTORS(MPEG2TSExtractor);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    void seekTo(int64_t seekTimeUs);
+    bool getSeeking();
+    bool IsLocalSource(); // http streaming seek is needed
+    void setVideoState(bool state);
+    bool getVideoState(void);
+private:
+    off64_t mOffsetPAT;
+    int64_t mDurationUs;
+    int64_t mSeekTimeUs;
+    bool mSeeking;
+    bool mFindingMaxPTS;
+    bool End_OF_FILE;
+    uint64_t mMaxcount;
+    off64_t mSeekingOffset;
+    off64_t mFileSize;
+    off64_t mMinOffset;
+    off64_t mMaxOffset;
+    bool mVideoUnSupportedByDecoder;
+    size_t kFillPacketSize;
+    status_t parseMaxPTS();
+    uint64_t getDurationUs();
+    bool findPAT();
+#endif
 };
 
+#ifdef MTK_AOSP_ENHANCEMENT
+bool findSyncWord(const sp<DataSource> &source,off64_t StartOffset, uint64_t size, size_t PacketSize, off64_t &NewOffset);
+#endif
 bool SniffMPEG2TS(
         const sp<DataSource> &source, String8 *mimeType, float *confidence,
         sp<AMessage> *);

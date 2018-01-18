@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +35,7 @@ namespace android {
 struct ABuffer;
 class MediaBuffer;
 
+
 struct NuPlayer::Source : public AHandler {
     enum Flags {
         FLAG_CAN_PAUSE          = 1,
@@ -55,6 +61,14 @@ struct NuPlayer::Source : public AHandler {
         kWhatQueueDecoderShutdown,
         kWhatDrmNoLicense,
         kWhatInstantiateSecureDecoders,
+#ifdef MTK_AOSP_ENHANCEMENT
+        kWhatConnDone       = 'cdon',
+        kWhatBufferNotify   = 'buff',
+        kWhatSeekDone       = 'sdon',
+        kWhatPicture        = 'pict', // orange
+        kWhatSourceError    = 'serr',
+        kWhatDurationUpdate = 'dura'
+#endif
     };
 
     // The provides message is used to notify the player about various
@@ -137,6 +151,38 @@ protected:
 private:
     sp<AMessage> mNotify;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    virtual bool hasVideo() { return false;}
+
+    //  return -EWOULDBLOCK: not ready
+    //  return OK: is ready
+    //  virtual status_t allTracksPresent() {return INVALID_OPERATION;};
+    virtual status_t initCheck() const {return OK;}
+    virtual void setParams(const sp<MetaData> &) {};
+    virtual status_t getFinalStatus() const {return OK;}
+    virtual status_t getBufferedDuration(bool , int64_t *) {return INVALID_OPERATION;};
+    virtual sp<MetaData> getMetaData() {return mMetaData;};
+    virtual void stopTrack(bool ) { return; }
+    virtual bool notifyCanNotConnectServerIfPossible(int64_t /*curPositionUs*/) {return false;}
+
+    enum DataSourceType {
+        SOURCE_Default,
+        SOURCE_HttpLive,
+        SOURCE_Local,
+        SOURCE_Rtsp,
+        SOURCE_Http,
+    };
+
+    virtual DataSourceType getDataSourceType() { return SOURCE_Default; }
+
+    enum {
+        NOT_USE_RENDEREDPOSITIONUS = -1
+    };
+
+protected:
+    sp<MetaData> mMetaData;
+#endif
     DISALLOW_EVIL_CONSTRUCTORS(Source);
 };
 

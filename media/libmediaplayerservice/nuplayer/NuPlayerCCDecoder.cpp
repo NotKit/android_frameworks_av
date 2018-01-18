@@ -236,6 +236,9 @@ bool NuPlayer::CCDecoder::parseSEINalUnit(int64_t timeUs, const uint8_t *data, s
     if (nalType != 6) {
         return false;
     }
+#if MTK_AOSP_ENHANCEMENT
+    size_t totalparse = 0;
+#endif
 
     bool trackAdded = false;
     NALBitReader br(data + 1, size - 1);
@@ -256,6 +259,12 @@ bool NuPlayer::CCDecoder::parseSEINalUnit(int64_t timeUs, const uint8_t *data, s
             payload_size += last_byte;
         } while (last_byte == 0xFF);
 
+#if MTK_AOSP_ENHANCEMENT
+        totalparse += payload_size;
+        if (totalparse > size) {
+          break;
+        }
+#endif
         // sei_payload()
         if (payload_type == 4) {
             bool isCC = false;
@@ -286,6 +295,12 @@ bool NuPlayer::CCDecoder::parseSEINalUnit(int64_t timeUs, const uint8_t *data, s
         }
 
         // skipping remaining bits of this payload
+#if MTK_AOSP_ENHANCEMENT
+        if (br.numBitsLeft() <= payload_size * 8){
+            ALOGD("Invalid skipbits in parse CC");
+            return false;
+        }
+#endif
         br.skipBits(payload_size * 8);
     }
 

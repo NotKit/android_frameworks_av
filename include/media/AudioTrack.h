@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -876,7 +881,19 @@ protected:
                                         // to processAudioBuffer() as state may have changed
                                         // since pause time calculated.
     };
+    /// M: ALPS02266941: For Game Detection @{
+#ifdef MTK_GAS_SERVICE_SUPPORT
+    class GameDetectionThread : public Thread
+    {
+    public:
+        GameDetectionThread();
 
+    private:
+        virtual ~GameDetectionThread();
+        virtual bool        threadLoop();
+    };
+#endif
+    /// @}
             // body of AudioTrackThread::threadLoop()
             // returns the maximum amount of time before we would like to run again, where:
             //      0           immediately
@@ -933,7 +950,6 @@ protected:
     sp<IMemory>             mCblkMemory;
     audio_track_cblk_t*     mCblk;                  // re-load after mLock.unlock()
     audio_io_handle_t       mOutput;                // returned by AudioSystem::getOutput()
-
     sp<AudioTrackThread>    mAudioTrackThread;
     bool                    mThreadCanCallJava;
 
@@ -1088,6 +1104,9 @@ protected:
     // For Device Selection API
     //  a value of AUDIO_PORT_HANDLE_NONE indicated default (AudioPolicyManager) routing.
     audio_port_handle_t     mSelectedDeviceId;
+#ifdef MTK_AUDIO
+    bool                    sTimeStampFlag;
+#endif
 
 private:
     class DeathNotifier : public IBinder::DeathRecipient {
@@ -1105,8 +1124,23 @@ private:
     pid_t                   mClientPid;
 
     sp<AudioSystem::AudioDeviceCallback> mDeviceCallback;
+    // handle for perfService
+       void* mPerfHandle;
+       int32_t mUserScnHandle;
 };
 
-}; // namespace android
+#ifdef MTK_AOSP_ENHANCEMENT
+class AudioTrackDump
+{
+public:
+    static void dump(const char *path, void *buffer, int count, const char *property);
+private:
+    static int checkPath(const char *path);
+private:
+    AudioTrackDump(AudioTrackDump &);
+    AudioTrackDump & operator = (AudioTrackDump&);
+};
+#endif
 
+}; // namespace android
 #endif // ANDROID_AUDIOTRACK_H

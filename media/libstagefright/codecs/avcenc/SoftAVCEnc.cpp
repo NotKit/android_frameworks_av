@@ -170,7 +170,12 @@ SoftAVC::SoftAVC(
       mCodecCtx(NULL) {
 
     initPorts(kNumBuffers, kNumBuffers, ((mWidth * mHeight * 3) >> 1),
+#ifdef MTK_AOSP_ENHANCEMENT
+            //20150916 mtk09689: Fix ALPS02295565 with enlarged bitstream buffer.
+            MEDIA_MIMETYPE_VIDEO_AVC, 1);
+#else
             MEDIA_MIMETYPE_VIDEO_AVC, 2);
+#endif
 
     // If dump is enabled, then open create an empty file
     GENERATE_FILE_NAMES();

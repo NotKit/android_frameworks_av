@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -65,6 +70,9 @@ SoftAACEncoder2::SoftAACEncoder2(
       mAllocatedFrameSize(0),
       mInputTimeUs(-1ll),
       mSawInputEOS(false),
+#ifdef MTK_AOSP_ENHANCEMENT
+      mEOSHaveNoData(false),
+#endif
       mSignalledError(false) {
     initPorts();
     CHECK_EQ(initEncoder(), (status_t)OK);
@@ -74,7 +82,8 @@ SoftAACEncoder2::SoftAACEncoder2(
 SoftAACEncoder2::~SoftAACEncoder2() {
     aacEncClose(&mAACEncoder);
 
-    onReset();
+    delete[] mInputFrame;
+    mInputFrame = NULL;
 }
 
 void SoftAACEncoder2::initPorts() {
@@ -512,15 +521,6 @@ void SoftAACEncoder2::onQueueFilled(OMX_U32 /* portIndex */) {
 
         BufferInfo *outInfo = *outQueue.begin();
         OMX_BUFFERHEADERTYPE *outHeader = outInfo->mHeader;
-
-        if (outHeader->nOffset + encInfo.confSize > outHeader->nAllocLen) {
-            ALOGE("b/34617444");
-            android_errorWriteLog(0x534e4554,"34617444");
-            notify(OMX_EventError, OMX_ErrorUndefined, 0, NULL);
-            mSignalledError = true;
-            return;
-        }
-
         outHeader->nFilledLen = encInfo.confSize;
         outHeader->nFlags = OMX_BUFFERFLAG_CODECCONFIG;
 
@@ -602,6 +602,12 @@ void SoftAACEncoder2::onQueueFilled(OMX_U32 /* portIndex */) {
                     memset((uint8_t *)mInputFrame + mInputSize,
                            0,
                            numBytesPerInputFrame - mInputSize);
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if (mInputSize == 0)
+                    {
+                        mEOSHaveNoData = true;
+                    }
+#endif
 
                     mInputSize = numBytesPerInputFrame;
                 }
@@ -699,6 +705,12 @@ void SoftAACEncoder2::onQueueFilled(OMX_U32 /* portIndex */) {
         if (mSawInputEOS) {
             // We also tag this output buffer with EOS if it corresponds
             // to the final input buffer.
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (mEOSHaveNoData)
+            {
+                outHeader->nFilledLen = 0;
+            }
+#endif
             outHeader->nFlags = OMX_BUFFERFLAG_EOS;
         }
 
@@ -720,18 +732,6 @@ void SoftAACEncoder2::onQueueFilled(OMX_U32 /* portIndex */) {
 
         mInputSize = 0;
     }
-}
-
-void SoftAACEncoder2::onReset() {
-    delete[] mInputFrame;
-    mInputFrame = NULL;
-    mInputSize = 0;
-    mAllocatedFrameSize = 0;
-
-    mSentCodecSpecificData = false;
-    mInputTimeUs = -1ll;
-    mSawInputEOS = false;
-    mSignalledError = false;
 }
 
 }  // namespace android

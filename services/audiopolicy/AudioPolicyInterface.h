@@ -22,6 +22,8 @@
 #include <utils/String8.h>
 
 #include <hardware/audio_policy.h>
+#include <hardware/AudioCustomVolume.h>// MTK
+
 
 namespace android {
 
@@ -231,6 +233,22 @@ public:
 
     virtual status_t setMasterMono(bool mono) = 0;
     virtual status_t getMasterMono(bool *mono) = 0;
+
+    virtual status_t SetPolicyManagerParameters(int par1, int par2 , int par3 , int par4) = 0;
+
+    virtual status_t StartOutputSamplerate (audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 audio_session_t session ,int samplerate) = 0;
+    virtual status_t StopOutputSamplerate (audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 audio_session_t session ,int samplerate) = 0;
+
+    virtual status_t SampleRateRequestFocus (audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 int *samplerate) = 0;
+    virtual status_t SampleRateUnrequestFocus (audio_io_handle_t output,
+                                 audio_stream_type_t stream,
+                                 int samplerate) = 0;
 };
 
 
@@ -341,6 +359,8 @@ public:
                     const struct audio_config_base *clientConfig,
                     const struct audio_config_base *deviceConfig,
                     audio_patch_handle_t patchHandle) = 0;
+    /* MTK for get custom audio volume setting */
+    virtual status_t getCustomAudioVolume(void* pCustomVol) = 0;
 };
 
 extern "C" AudioPolicyInterface* createAudioPolicyManager(AudioPolicyClientInterface *clientInterface);

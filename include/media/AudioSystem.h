@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -466,8 +471,49 @@ private:
     static audio_channel_mask_t gPrevInChannelMask;
 
     static sp<IAudioPolicyService> gAudioPolicyService;
-};
 
+    public:
+    static int xWayPlay_Start(int sample_rate);
+    static int xWayPlay_Stop(void);
+    static int xWayPlay_Write(void *buffer, int size_bytes);
+    static int xWayPlay_GetFreeBufferCount(void);
+    static int xWayRec_Start(int sample_rate);
+    static int xWayRec_Stop(void);
+    static int xWayRec_Read(void *buffer, int size_bytes);
+
+    //add by wendy
+    static int ReadRefFromRing(void*buf, uint32_t datasz,void* DLtime);
+    static int GetVoiceUnlockULTime(void* DLtime);
+    static int SetVoiceUnlockSRC(uint outSR, uint outChannel);
+    static bool startVoiceUnlockDL();
+    static bool stopVoiceUnlockDL();
+    static void freeVoiceUnlockDLInstance();
+    static bool getVoiceUnlockDLInstance();
+    static int GetVoiceUnlockDLLatency();
+
+    static status_t StartOutputSamplerate (audio_io_handle_t output,audio_stream_type_t stream,audio_session_t session ,int samplerate);
+    static status_t StopOutputSamplerate (audio_io_handle_t output,audio_stream_type_t stream,audio_session_t session ,int samplerate);
+    static status_t setSurroundOnOff(int value);
+    static status_t setSurroundMode(int value);
+
+
+    //add . for AM mode set/get  parameters
+    static status_t SetACFPreviewParameter(void *ptr,size_t len);
+    static status_t SetHCFPreviewParameter(void *ptr,size_t len);
+    static status_t  getHDMICapability(        int* HDMI_ChannelCount, int* HDMI_Bitwidth,int* HDMI_MaxSampleRate );
+
+    static status_t SampleRateRequestFocus (audio_io_handle_t output,audio_stream_type_t stream, int *samplerate);
+    static status_t SampleRateUnrequestFocus (audio_io_handle_t output,audio_stream_type_t stream, int samplerate);
+
+    enum tty_mode_t
+    {
+        AUD_TTY_OFF  =  0,
+        AUD_TTY_FULL =  1,
+        AUD_TTY_VCO  =  2,
+        AUD_TTY_HCO  =  4,
+        AUD_TTY_ERR  = -1
+    };
+};
 };  // namespace android
 
 #endif  /*ANDROID_AUDIOSYSTEM_H_*/

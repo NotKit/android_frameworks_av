@@ -80,6 +80,29 @@ LOCAL_EXPORT_C_INCLUDE_DIRS := \
 
 LOCAL_CFLAGS += -Wall -Wextra -Werror
 
+#//!++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ifneq ($(strip $(MTK_EMULATOR_SUPPORT)),yes)
+#ifeq ($(HAVE_MATV_FEATURE),yes)
+    LOCAL_CFLAGS += -DATVCHIP_MTK_ENABLE
+#endif
+endif
+#ifeq ($(MTK_CROSSMOUNT_SUPPORT),yes)
+    LOCAL_CFLAGS += -DMTKCAM_HAVE_CAMERAMOUNT
+#endif
+ifeq ($(MTK_CAM_FRAMEWORK_DEFAULT_CODE),yes)
+    LOCAL_CFLAGS += -DMTK_CAM_FRAMEWORK_DEFAULT_CODE
+endif
+
+    LOCAL_SHARED_LIBRARIES += libdl
+    LOCAL_SHARED_LIBRARIES += libmtkcam_fwkutils
+
+    LOCAL_C_INCLUDES += $(TOP)/$(MTK_PATH_SOURCE)/hardware/mtkcam/include
+    LOCAL_SRC_FILES += mediatek/CameraService.cpp
+    LOCAL_SRC_FILES += mediatek/api1/CameraClient.cpp
+    LOCAL_SRC_FILES += mediatek/device1/CameraHardwareInterface.cpp
+
+#//!----------------------------------------------------------------------------
+
 LOCAL_MODULE:= libcameraservice
 
 include $(BUILD_SHARED_LIBRARY)

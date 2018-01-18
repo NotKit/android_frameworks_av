@@ -25,6 +25,6 @@ LOCAL_CFLAGS += -Werror -Wall
 LOCAL_CLANG := true
 LOCAL_SANITIZE := signed-integer-overflow
 
-include $(BUILD_SHARED_LIBRARY)
+include $(MTK_SHARED_LIBRARY)
 
 endif

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -46,21 +51,50 @@
 
 #include <CharacterEncodingDetector.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#undef ALOGV
+#define ALOGV ALOGD
+#endif  
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_DRM_APP
+#include <drm/DrmMtkDef.h>
+#include <drm/DrmMtkUtil.h>
+#include <utils/String8.h>
+#endif
+#include "FileSourceProxy.h"
+#define ATRACE_TAG ATRACE_TAG_VIDEO
+#include <utils/Trace.h>
+#endif
+
 namespace android {
 
+#ifdef MTK_AOSP_ENHANCEMENT
+static const int64_t kOutPutBufferTimeOutUs = 50000ll; // 50 msec
+#endif
 static const int64_t kBufferTimeOutUs = 30000ll; // 30 msec
 static const size_t kRetryCount = 20; // must be >0
 
 StagefrightMetadataRetriever::StagefrightMetadataRetriever()
     : mParsedMetaData(false),
       mAlbumArt(NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+	ATRACE_CALL();
+#endif
+#ifndef MTK_AOSP_ENHANCEMENT
     ALOGV("StagefrightMetadataRetriever()");
+#endif
 
     DataSource::RegisterDefaultSniffers();
 }
 
 StagefrightMetadataRetriever::~StagefrightMetadataRetriever() {
+#ifndef MTK_AOSP_ENHANCEMENT
     ALOGV("~StagefrightMetadataRetriever()");
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT
+		ATRACE_CALL();
+#endif
     clearMetadata();
     if (mSource != NULL) {
         mSource->close();
@@ -71,6 +105,9 @@ status_t StagefrightMetadataRetriever::setDataSource(
         const sp<IMediaHTTPService> &httpService,
         const char *uri,
         const KeyedVector<String8, String8> *headers) {
+#ifdef MTK_AOSP_ENHANCEMENT
+	ATRACE_CALL();
+#endif        
     ALOGV("setDataSource(%s)", uri);
 
     clearMetadata();
@@ -81,7 +118,28 @@ status_t StagefrightMetadataRetriever::setDataSource(
         return UNKNOWN_ERROR;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    const char * sniffedMIME = NULL;
+    if ((!strncasecmp("/system/media/audio/", uri, 20)) && (strcasestr(uri,".ogg") != NULL))
+    {
+         sniffedMIME = MEDIA_MIMETYPE_CONTAINER_OGG;
+    }
+    mExtractor = MediaExtractor::Create(mSource, sniffedMIME);
+#else
     mExtractor = MediaExtractor::Create(mSource);
+#endif
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_DRM_APP
+    // after it attempts to create extractor: for .dcf file with invalid rights,
+    //   the mExtractor will be NULL. We need to return OK here directly.
+    if (mExtractor == NULL && DrmMtkUtil::isDcf(String8(uri))) {
+        // we assume it's file path name - for OMA DRM v1
+        ALOGD("setDataSource() : it is a OMA DRM v1 .dcf file. return OK");
+        return OK;
+    }
+#endif
+#endif 
 
     if (mExtractor == NULL) {
         ALOGE("Unable to instantiate an extractor for '%s'.", uri);
@@ -90,6 +148,12 @@ status_t StagefrightMetadataRetriever::setDataSource(
 
         return UNKNOWN_ERROR;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mExtractor->countTracks() == 0) {
+	    	ALOGW("Track number is 0");
+	        return UNKNOWN_ERROR;
+    }
+#endif
 
     return OK;
 }
@@ -97,27 +161,72 @@ status_t StagefrightMetadataRetriever::setDataSource(
 // Warning caller retains ownership of the filedescriptor! Dup it if necessary.
 status_t StagefrightMetadataRetriever::setDataSource(
         int fd, int64_t offset, int64_t length) {
+#ifdef MTK_AOSP_ENHANCEMENT
+	ATRACE_CALL();
+	int64_t tracetime = systemTime()/1000;
+#endif         
     fd = dup(fd);
 
     ALOGV("setDataSource(%d, %" PRId64 ", %" PRId64 ")", fd, offset, length);
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("fd=%d,path=%s",fd,nameForFd(fd).c_str());
+#endif
 
     clearMetadata();
     mSource = new FileSource(fd, offset, length);
+/// M: add for the stop file cache ALPS01481978 @{
+#ifdef MTK_AOSP_ENHANCEMENT
+    extern FileSourceProxy gFileSourceProxy;
+    gFileSourceProxy.unregisterFd(fd);
+#endif
+/// }@
 
     status_t err;
     if ((err = mSource->initCheck()) != OK) {
         mSource.clear();
-
+#ifdef MTK_AOSP_ENHANCEMENT
+				ALOGW("mSource initCheck fail err=%d",err);
+#endif
         return err;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+		String8 tmp;
+		if( mSource->fastsniff(fd, &tmp))
+		{
+			const char *sniffedMIME = tmp.string();
+			mExtractor = MediaExtractor::Create(mSource, sniffedMIME);
+		}
+		else
+#endif
     mExtractor = MediaExtractor::Create(mSource);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_DRM_APP
+	// OMA DRM v1 implementation:
+    // after it attempts to create extractor: for .dcf file with invalid rights,
+    //   the mExtractor will be NULL. We need to return OK here directly.
+    if (mExtractor == NULL && DrmMtkUtil::isDcf(fd)) {
+        ALOGD("setDataSource() : it is a OMA DRM v1 .dcf file. return OK");
+        return OK;
+    }
+#endif
+#endif //#ifndef ANDROID_DEFAULT_CODE
     if (mExtractor == NULL) {
         mSource.clear();
-
+#ifdef MTK_AOSP_ENHANCEMENT
+				 ALOGE("Unable to instantiate an extractor for '%d'.", fd);
+#endif
         return UNKNOWN_ERROR;
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mExtractor->countTracks() == 0) {
+    	ALOGW("Track number is 0");
+    }
+	int64_t tracetime_end = systemTime()/1000;
+    ALOGD("setdatasource time %lld ms",(long long)(tracetime_end-tracetime)/1000);
+#endif
 
     return OK;
 }
@@ -145,6 +254,11 @@ static VideoFrame *extractVideoFrame(
         const sp<IMediaSource> &source,
         int64_t frameTimeUs,
         int seekMode) {
+#ifdef MTK_AOSP_ENHANCEMENT
+	ATRACE_CALL();
+	int64_t tracetime_0 = systemTime()/1000;
+    ALOGD("extractVideoFrame");
+#endif
 
     sp<MetaData> format = source->getFormat();
 
@@ -155,6 +269,18 @@ static VideoFrame *extractVideoFrame(
         return NULL;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+	int64_t tracetime_1 = systemTime()/1000;
+
+    if(source == NULL || format == NULL) {
+		ALOGV("MetaData is NULL.");
+		return NULL;
+	}
+    if(videoFormat == NULL) {
+        ALOGV("videoFormat is NULL.");
+        return NULL;
+    }
+#endif
     // TODO: Use Flexible color instead
     videoFormat->setInt32("color-format", OMX_COLOR_FormatYUV420Planar);
 
@@ -178,7 +304,15 @@ static VideoFrame *extractVideoFrame(
         return NULL;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    err = decoder->configure(videoFormat, NULL /* surface */, NULL /* crypto */,
+                             MediaCodec::CONFIGURE_FLAG_ENABLE_THUMBNAIL_OPTIMIZATION /* flags */);
+#else
     err = decoder->configure(videoFormat, NULL /* surface */, NULL /* crypto */, 0 /* flags */);
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT	
+	int64_t tracetime_2 = systemTime()/1000;
+#endif
     if (err != OK) {
         ALOGW("configure returned error %d (%s)", err, asString(err));
         decoder->release();
@@ -192,6 +326,9 @@ static VideoFrame *extractVideoFrame(
         return NULL;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t tracetime_3 = systemTime()/1000;
+#endif
     MediaSource::ReadOptions options;
     if (seekMode < MediaSource::ReadOptions::SEEK_PREVIOUS_SYNC ||
         seekMode > MediaSource::ReadOptions::SEEK_CLOSEST) {
@@ -223,6 +360,9 @@ static VideoFrame *extractVideoFrame(
         return NULL;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t tracetime_4 = systemTime()/1000;
+#endif
     Vector<sp<ABuffer> > inputBuffers;
     err = decoder->getInputBuffers(&inputBuffers);
     if (err != OK) {
@@ -240,6 +380,10 @@ static VideoFrame *extractVideoFrame(
         source->stop();
         return NULL;
     }
+#ifdef MTK_AOSP_ENHANCEMENT	
+    int64_t tracetime_5 = systemTime()/1000;
+    ALOGD("get input and output buffer time %lld",(long long)(tracetime_5- tracetime_4));
+#endif
 
     sp<AMessage> outputFormat = NULL;
     bool haveMoreInputs = true;
@@ -247,6 +391,11 @@ static VideoFrame *extractVideoFrame(
     int64_t timeUs;
     size_t retriesLeft = kRetryCount;
     bool done = false;
+#ifdef MTK_AOSP_ENHANCEMENT
+    int Numinputbuffers = 0;
+    bool HaveAvcOrHevcIDR = false;
+#endif
+
     const char *mime;
     bool success = format->findCString(kKeyMIMEType, &mime);
     if (!success) {
@@ -270,9 +419,15 @@ static VideoFrame *extractVideoFrame(
             err = decoder->dequeueInputBuffer(&inputIndex, kBufferTimeOutUs);
             if (err != OK) {
                 ALOGW("Timed out waiting for input");
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (--retriesLeft) {
+                    err = OK;
+                }
+#else
                 if (retriesLeft) {
                     err = OK;
                 }
+#endif
                 break;
             }
             codecBuffer = inputBuffers[inputIndex];
@@ -284,6 +439,7 @@ static VideoFrame *extractVideoFrame(
             if (err != OK) {
                 ALOGW("Input Error or EOS");
                 haveMoreInputs = false;
+
                 break;
             }
             if (firstSample && isSeekingClosest) {
@@ -303,18 +459,59 @@ static VideoFrame *extractVideoFrame(
                 memcpy(codecBuffer->data(),
                         (const uint8_t*)mediaBuffer->data() + mediaBuffer->range_offset(),
                         mediaBuffer->range_length());
+#ifdef MTK_AOSP_ENHANCEMENT //add for avc or hevc top&bottom case
+                if(!isSeekingClosest){
+                    if (isAvcOrHevc && (!HaveAvcOrHevcIDR) && IsIDR(codecBuffer)) {
+                        HaveAvcOrHevcIDR = true;
+                    } else if (HaveAvcOrHevcIDR) {
+                        // Only need to decode two frame.
+                        haveMoreInputs = false;
+                        flags |= MediaCodec::BUFFER_FLAG_EOS;
+                    }
+                }
+#else
                 if (isAvcOrHevc && IsIDR(codecBuffer) && !isSeekingClosest) {
                     // Only need to decode one IDR frame, unless we're seeking with CLOSEST
                     // option, in which case we need to actually decode to targetTimeUs.
                     haveMoreInputs = false;
                     flags |= MediaCodec::BUFFER_FLAG_EOS;
                 }
+#endif
             }
 
             mediaBuffer->release();
             break;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if ((err == OK || err == ERROR_END_OF_STREAM) && inputIndex < inputBuffers.size()) {
+            if(err == OK){
+                ALOGV("QueueInput: size=%zu ts=%" PRId64 " us flags=%x",
+                        codecBuffer->size(), ptsUs, flags);
+                err = decoder->queueInputBuffer(
+                        inputIndex,
+                        codecBuffer->offset(),
+                        codecBuffer->size(),
+                        ptsUs,
+                        flags);
+            }else{
+                ALOGV("Input EOS buffer");
+                err = decoder->queueInputBuffer(
+                        inputIndex,
+                        0,
+                        0,
+                        0,
+                        MediaCodec::BUFFER_FLAG_EOS);
+                Numinputbuffers++;
+            }
+            Numinputbuffers++;
+
+            // we don't expect an output from codec config buffer
+            if (flags & MediaCodec::BUFFER_FLAG_CODECCONFIG) {
+                continue;
+            }
+        }
+#else
         if (err == OK && inputIndex < inputBuffers.size()) {
             ALOGV("QueueInput: size=%zu ts=%" PRId64 " us flags=%x",
                     codecBuffer->size(), ptsUs, flags);
@@ -330,7 +527,45 @@ static VideoFrame *extractVideoFrame(
                 continue;
             }
         }
+#endif
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        while (err == OK && Numinputbuffers > 1) {
+            // wait for a decoded buffer
+            err = decoder->dequeueOutputBuffer(
+                    &index,
+                    &offset,
+                    &size,
+                    &timeUs,
+                    &flags,
+                    kOutPutBufferTimeOutUs);
+
+            if (err == INFO_FORMAT_CHANGED) {
+                ALOGV("Received format change");
+                err = decoder->getOutputFormat(&outputFormat);
+            } else if (err == INFO_OUTPUT_BUFFERS_CHANGED) {
+                ALOGV("Output buffers changed");
+                err = decoder->getOutputBuffers(&outputBuffers);
+            } else {
+                if (err == -EAGAIN /* INFO_TRY_AGAIN_LATER */ && --retriesLeft > 0) {
+                    ALOGV("Timed-out waiting for output.. retries left = %zu", retriesLeft);
+                    err = OK;
+                } else if (err == OK) {
+                    // If we're seeking with CLOSEST option and obtained a valid targetTimeUs
+                    // from the extractor, decode to the specified frame. Otherwise we're done.
+                    done = (targetTimeUs < 0ll) || (timeUs >= targetTimeUs);
+                    ALOGV("Received an output buffer, timeUs=%lld", (long long)timeUs);
+                    if (!done) {
+                        err = decoder->releaseOutputBuffer(index);
+                    }
+                } else {
+                    ALOGW("Received error %d (%s) instead of output", err, asString(err));
+                    done = true;
+                }
+                break;
+            }
+        }
+#else
         while (err == OK) {
             // wait for a decoded buffer
             err = decoder->dequeueOutputBuffer(
@@ -366,8 +601,13 @@ static VideoFrame *extractVideoFrame(
                 break;
             }
         }
+#endif
     } while (err == OK && !done);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t tracetime_6 = systemTime()/1000;
+    ALOGD("decode frame time %lld",(long long)(tracetime_6- tracetime_5));
+#endif
     if (err != OK || size <= 0 || outputFormat == NULL) {
         ALOGE("Failed to decode thumbnail frame");
         source->stop();
@@ -392,6 +632,13 @@ static VideoFrame *extractVideoFrame(
     CHECK(outputFormat->findInt32("width", &width));
     CHECK(outputFormat->findInt32("height", &height));
 
+#ifdef MTK_AOSP_ENHANCEMENT
+	int32_t Stridewidth,SliceHeight;
+    CHECK(outputFormat->findInt32("stride", &Stridewidth));
+    CHECK(outputFormat->findInt32("slice-height", &SliceHeight));
+	ALOGD("kKeyWidth=%d,kKeyHeight=%d",width,height);
+	ALOGD("Stridewidth=%d,SliceHeight=%d",Stridewidth,SliceHeight);
+#endif
     int32_t crop_left, crop_top, crop_right, crop_bottom;
     if (!outputFormat->findRect("crop", &crop_left, &crop_top, &crop_right, &crop_bottom)) {
         crop_left = crop_top = 0;
@@ -409,7 +656,13 @@ static VideoFrame *extractVideoFrame(
     frame->mHeight = crop_bottom - crop_top + 1;
     frame->mDisplayWidth = frame->mWidth;
     frame->mDisplayHeight = frame->mHeight;
+
+#ifdef MTK_HIGH_QUALITY_THUMBNAIL
+    frame->mSize = frame->mWidth * frame->mHeight * 4;
+#else
     frame->mSize = frame->mWidth * frame->mHeight * 2;
+#endif
+
     frame->mData = new uint8_t[frame->mSize];
     frame->mRotationAngle = rotationAngle;
 
@@ -423,7 +676,42 @@ static VideoFrame *extractVideoFrame(
     int32_t srcFormat;
     CHECK(outputFormat->findInt32("color-format", &srcFormat));
 
+#ifdef MTK_AOSP_ENHANCEMENT
+		width=Stridewidth;
+		height=SliceHeight;
+		//crop_right = width - 1;
+		//crop_bottom = height - 1;
+    int64_t tracetime_7 = systemTime()/1000;
+#endif
+#if 0
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t crop_padding_left, crop_padding_top, crop_padding_right, crop_padding_bottom;
+    if (!outputFormat->findRect(
+        kKeyCropPaddingRect,
+        &crop_padding_left, &crop_padding_top, &crop_padding_right, &crop_padding_bottom)) {
+        ALOGE("kKeyCropPaddingRect not found\n");
+        crop_padding_left = crop_padding_top = 0;
+        crop_padding_right = width - 1;
+        crop_padding_bottom = height - 1;
+    }
+    sp<MetaData> inputFormat = source->getFormat();
+    const char *mime;
+    if (inputFormat->findCString(kKeyMIMEType, &mime)) {
+        ALOGD("width=%d, height=%d", width, height);
+        if (!strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_VP9)) {
+            crop_left = crop_padding_left;
+            crop_right = crop_padding_right;
+            crop_top = crop_padding_top;
+            crop_bottom = crop_padding_bottom;
+        }
+    }
+#endif
+#endif
+#ifndef MTK_HIGH_QUALITY_THUMBNAIL
     ColorConverter converter((OMX_COLOR_FORMATTYPE)srcFormat, OMX_COLOR_Format16bitRGB565);
+#else
+    ColorConverter converter((OMX_COLOR_FORMATTYPE)srcFormat, OMX_COLOR_Format32bitARGB8888);
+#endif
 
     if (converter.isValid()) {
         err = converter.convert(
@@ -439,11 +727,20 @@ static VideoFrame *extractVideoFrame(
 
         err = ERROR_UNSUPPORTED;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t tracetime_8 = systemTime()/1000;
+#endif
 
     videoFrameBuffer.clear();
     source->stop();
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t tracetime_9 = systemTime()/1000;
+#endif
     decoder->releaseOutputBuffer(index);
     decoder->release();
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t tracetime_10= systemTime()/1000;
+#endif
 
     if (err != OK) {
         ALOGE("Colorconverter failed to convert frame.");
@@ -451,13 +748,23 @@ static VideoFrame *extractVideoFrame(
         delete frame;
         frame = NULL;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t tracetime_11 = systemTime()/1000;
+    ALOGD("decoderframe time summary(us): getformat: %lld,decoder create: %lld,decoder start: %lld, source start: %lld,\
+        colorconvert: %lld,source stop: %lld,buffer release:%lld,decoder stop: %lld,total: %lld",(long long)(tracetime_1-tracetime_0),(long long)(tracetime_2-tracetime_1),\
+        (long long)(tracetime_3-tracetime_2),(long long)(tracetime_4-tracetime_3),(long long)(tracetime_8-tracetime_7),(long long)(tracetime_9-tracetime_8),(long long)(tracetime_10-tracetime_9),\
+        (long long)(tracetime_11-tracetime_10),(long long)(tracetime_11-tracetime_0));
+#endif
 
     return frame;
 }
 
 VideoFrame *StagefrightMetadataRetriever::getFrameAtTime(
         int64_t timeUs, int option) {
-
+#ifdef MTK_AOSP_ENHANCEMENT
+	ATRACE_CALL();
+    int64_t tracetime_0 = systemTime()/1000;
+#endif 
     ALOGV("getFrameAtTime: %" PRId64 " us option: %d", timeUs, option);
 
     if (mExtractor.get() == NULL) {
@@ -482,10 +789,19 @@ VideoFrame *StagefrightMetadataRetriever::getFrameAtTime(
     size_t i;
     for (i = 0; i < n; ++i) {
         sp<MetaData> meta = mExtractor->getTrackMetaData(i);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        if(meta.get() == NULL) return NULL;
+#endif // #ifndef ANDROID_DEFAULT_CODE
         const char *mime;
+#ifdef MTK_AOSP_ENHANCEMENT
+         /* temp workaround, will back to CHECK */
+        if(!meta->findCString(kKeyMIMEType, &mime)){
+			ALOGE("kKeyMIMEType is not setted");
+			return NULL;
+        }
+#else
         CHECK(meta->findCString(kKeyMIMEType, &mime));
-
+#endif
         if (!strncasecmp(mime, "video/", 6)) {
             break;
         }
@@ -518,11 +834,23 @@ VideoFrame *StagefrightMetadataRetriever::getFrameAtTime(
     CHECK(trackMeta->findCString(kKeyMIMEType, &mime));
 
     Vector<AString> matchingCodecs;
+#ifdef MTK_AOSP_ENHANCEMENT
+    MediaCodecList::findMatchingCodecs(
+            mime,
+            false, /* encoder */
+            0,
+            &matchingCodecs);
+    ALOGD("matchingCodecs size is %zu", matchingCodecs.size());
+#else
     MediaCodecList::findMatchingCodecs(
             mime,
             false, /* encoder */
             MediaCodecList::kPreferSoftwareCodecs,
             &matchingCodecs);
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t tracetime_1 = systemTime()/1000;
+#endif
 
     for (size_t i = 0; i < matchingCodecs.size(); ++i) {
         const AString &componentName = matchingCodecs[i];
@@ -530,6 +858,11 @@ VideoFrame *StagefrightMetadataRetriever::getFrameAtTime(
             extractVideoFrame(componentName, trackMeta, source, timeUs, option);
 
         if (frame != NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    int64_t tracetime_2 = systemTime()/1000;
+        ALOGD("getframeattime time summary(us),extract time: %lld,get frame time %lld,total time: %lld",
+            (long long)(tracetime_1-tracetime_0),(long long)(tracetime_2-tracetime_1),(long long)(tracetime_2-tracetime_0));
+#endif
             return frame;
         }
         ALOGV("%s failed to extract thumbnail, trying next decoder.", componentName.c_str());
@@ -539,6 +872,9 @@ VideoFrame *StagefrightMetadataRetriever::getFrameAtTime(
 }
 
 MediaAlbumArt *StagefrightMetadataRetriever::extractAlbumArt() {
+#ifdef MTK_AOSP_ENHANCEMENT
+	ATRACE_CALL();
+#endif 	
     ALOGV("extractAlbumArt (extractor: %s)", mExtractor.get() != NULL ? "YES" : "NO");
 
     if (mExtractor == NULL) {
@@ -559,6 +895,9 @@ MediaAlbumArt *StagefrightMetadataRetriever::extractAlbumArt() {
 }
 
 const char *StagefrightMetadataRetriever::extractMetadata(int keyCode) {
+#ifdef MTK_AOSP_ENHANCEMENT
+	ATRACE_CALL();
+#endif 	
     if (mExtractor == NULL) {
         return NULL;
     }
@@ -575,10 +914,23 @@ const char *StagefrightMetadataRetriever::extractMetadata(int keyCode) {
         return NULL;
     }
 
+    // const char, return strdup will cause a memory leak
     return mMetaData.valueAt(index).string();
+
 }
 
 void StagefrightMetadataRetriever::parseMetaData() {
+#ifdef MTK_AOSP_ENHANCEMENT
+	ATRACE_CALL();
+#ifdef MTK_DRM_APP
+    // OMA DRM v1 implementation: NULL extractor means .dcf without valid rights
+    if (mExtractor.get() == NULL) {
+        ALOGD("Invalid rights for OMA DRM v1 file. NULL extractor and cannot parse meta data.");
+        return;
+    }
+#endif
+#endif 
+
     sp<MetaData> meta = mExtractor->getMetaData();
 
     if (meta == NULL) {
@@ -670,12 +1022,21 @@ void StagefrightMetadataRetriever::parseMetaData() {
     int32_t audioBitrate = -1;
     int32_t rotationAngle = -1;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+	int32_t is_livephoto = 0;
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+	int32_t slowmotion_speed = 0;
+#endif
+#endif
     // The overall duration is the duration of the longest track.
     int64_t maxDurationUs = 0;
     String8 timedTextLang;
     for (size_t i = 0; i < numTracks; ++i) {
         sp<MetaData> trackMeta = mExtractor->getTrackMetaData(i);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (trackMeta.get() == NULL) return ;
+#endif
         int64_t durationUs;
         if (trackMeta->findInt64(kKeyDuration, &durationUs)) {
             if (durationUs > maxDurationUs) {
@@ -699,6 +1060,14 @@ void StagefrightMetadataRetriever::parseMetaData() {
                 if (!trackMeta->findInt32(kKeyRotation, &rotationAngle)) {
                     rotationAngle = 0;
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT			
+				trackMeta->findInt32(kKeySlowMotionSpeedValue,&slowmotion_speed);
+				ALOGD("parseMetaData: slowmotion_speed=%d",slowmotion_speed);
+#endif
+				trackMeta->findInt32(kKeyIsLivePhoto,&is_livephoto);
+				ALOGD("parseMetaData: kKeyIsLivePhoto =%s",is_livephoto==false?"false":"true");
+#endif
             } else if (!strcasecmp(mime, MEDIA_MIMETYPE_TEXT_3GPP)) {
                 const char *lang;
                 if (trackMeta->findCString(kKeyMediaLanguage, &lang)) {
@@ -737,6 +1106,20 @@ void StagefrightMetadataRetriever::parseMetaData() {
 
         sprintf(tmp, "%d", rotationAngle);
         mMetaData.add(METADATA_KEY_VIDEO_ROTATION, String8(tmp));
+#ifdef MTK_AOSP_ENHANCEMENT
+		sprintf(tmp,"%d",is_livephoto);
+		mMetaData.add(METADATA_KEY_Is_LivePhoto, String8(tmp));
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT		
+//		sprintf(tmp,"%d",slowmotion_speed);
+        if(slowmotion_speed == 8)
+            sprintf(tmp,"%d",8);
+        else if(slowmotion_speed > 0)
+            sprintf(tmp,"%d",4);
+        else
+            sprintf(tmp,"%d",0);
+        mMetaData.add(METADATA_KEY_SlowMotion_SpeedValue, String8(tmp));
+#endif		
+#endif
     }
 
     if (numTracks == 1 && hasAudio && audioBitrate >= 0) {
@@ -758,6 +1141,9 @@ void StagefrightMetadataRetriever::parseMetaData() {
 
         if (!strcasecmp(fileMIME, "video/x-matroska")) {
             sp<MetaData> trackMeta = mExtractor->getTrackMetaData(0);
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (trackMeta.get() == NULL) return ;
+#endif
             const char *trackMIME;
             CHECK(trackMeta->findCString(kKeyMIMEType, &trackMIME));
 

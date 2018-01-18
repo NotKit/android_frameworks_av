@@ -17,6 +17,15 @@
 #define LOG_TAG "APM::Serializer"
 //#define LOG_NDEBUG 0
 
+#ifdef MTK_AUDIO
+#ifdef CONFIG_MT_ENG_BUILD
+#define LOG_NDEBUG 0
+#endif
+#include "audio_custom_exp.h"
+#ifndef USE_REFMIC_IN_LOUDSPK
+#define USE_REFMIC_IN_LOUDSPK 0
+#endif
+#endif
 #include "Serializer.h"
 #include <convert/convert.h>
 #include "TypeConverter.h"
@@ -202,6 +211,15 @@ status_t AudioProfileTraits::deserialize(_xmlDoc */*doc*/, const _xmlNode *root,
     profile = new Element(formatFromString(format), channelMasksFromString(channels, ","),
                           samplingRatesFromString(samplingRates, ","));
 
+#ifdef MTK_AUDIO
+    // If the supported channel mask contain AUDIO_CHANNEL_IN_VOICE_UPLINK & AUDIO_CHANNEL_IN_VOICE_DNLINK
+    // We add AUDIO_CHANNEL_IN_VOICE_UPLINK|AUDIO_CHANNEL_IN_VOICE_DNLINK channel mask to supported channel mask list
+    if (profile->getChannels().indexOf(AUDIO_CHANNEL_IN_VOICE_UPLINK) >= 0
+        && profile->getChannels().indexOf(AUDIO_CHANNEL_IN_VOICE_DNLINK) >= 0
+        && profile->getChannels().indexOf(AUDIO_CHANNEL_IN_VOICE_UPLINK | AUDIO_CHANNEL_IN_VOICE_DNLINK) < 0) {
+            profile->addChannelMask(AUDIO_CHANNEL_IN_VOICE_UPLINK | AUDIO_CHANNEL_IN_VOICE_DNLINK);
+    }
+#endif
     profile->setDynamicFormat(profile->getFormat() == gDynamicFormat);
     profile->setDynamicChannels(profile->getChannels().isEmpty());
     profile->setDynamicRate(profile->getSampleRates().isEmpty());
@@ -458,12 +476,36 @@ status_t ModuleTraits::deserialize(xmlDocPtr doc, const xmlNode *root, PtrElemen
                               (const char*)attachedDevice);
                         sp<DeviceDescriptor> device =
                                 module->getDeclaredDevices().getDeviceFromTagName(String8((const char*)attachedDevice));
+#ifdef MTK_AUDIO
+#ifdef DISABLE_EARPIECE
+                        if (device->type() == AUDIO_DEVICE_OUT_EARPIECE) {
+                            xmlFree(attachedDevice);
+                            child = child->next;
+                            continue;
+                        }
+#endif
+#endif
                         ctx->addAvailableDevice(device);
                         xmlFree(attachedDevice);
                     }
                 }
                 child = child->next;
             }
+#ifdef MTK_AUDIO
+#ifdef FM_DIGITAL_OUT_SUPPORT  // For miss setting at xml config
+            sp<DeviceDescriptor> deviceFmOut = module->getDeclaredDevices().getDevice(AUDIO_DEVICE_OUT_FM, String8(""));
+            if (deviceFmOut != 0)
+                ctx->addAvailableDevice(deviceFmOut);
+#endif
+#if (USE_REFMIC_IN_LOUDSPK == 1)
+            if (!(AUDIO_DEVICE_IN_BACK_MIC & ctx->getAvailableInputDevices().types() &
+                    ~AUDIO_DEVICE_BIT_IN)) {
+                sp<DeviceDescriptor> deviceBackMicIn = module->getDeclaredDevices().getDevice(AUDIO_DEVICE_IN_BACK_MIC, String8(""));
+                if (deviceBackMicIn != 0)
+                    ctx->addAvailableDevice(deviceBackMicIn);
+            }
+#endif
+#endif
         }
         if (!xmlStrcmp(children->name, (const xmlChar *)childDefaultOutputDeviceTag)) {
             xmlChar *defaultOutputDevice = xmlNodeListGetString(doc, children->xmlChildrenNode, 1);;

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,6 +45,11 @@ class IRemoteDisplay;
 class IRemoteDisplayClient;
 struct IStreamSource;
 
+///M:Xmount@{
+class IRemoteMountClient;
+class IRemoteMount;
+///@}
+
 class IMediaPlayerService: public IInterface
 {
 public:
@@ -62,6 +72,24 @@ public:
     // provided interface at a time.
     virtual sp<IRemoteDisplay> listenForRemoteDisplay(const String16 &opPackageName,
             const sp<IRemoteDisplayClient>& client, const String8& iface) = 0;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+///M: MTK WFD feature {@
+    virtual status_t enableRemoteDisplay(const char *iface) = 0;
+
+    virtual sp<IRemoteDisplay> listenForRemoteDisplay(
+            const String16 &opPackageName, const sp<IRemoteDisplayClient>& client,
+            const String8& iface, const uint32_t wfdFlags) = 0;
+    virtual sp<IRemoteDisplay> connectForRemoteDisplay(const sp<IRemoteDisplayClient>& client,
+            const String8& iface, const sp<IGraphicBufferProducer> &bufferProducer) = 0;
+    virtual status_t enableRemoteDisplay(const char *iface, const uint32_t wfdFlags) = 0;
+/// @}
+
+///M:Xmount@{
+    virtual sp<IRemoteMount> listenForRemoteMount(const sp<IRemoteMountClient>& client,
+                const String8& iface, const bool isProvider, const uint32_t mode)= 0;
+///@}
+#endif
 
     // codecs and audio devices usage tracking for the battery app
     enum BatteryDataBits {

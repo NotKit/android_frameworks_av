@@ -43,10 +43,22 @@
 #include <SoundTriggerSession.h>
 #include <SessionRoute.h>
 #include <VolumeCurve.h>
+// <MTK_AUDIO_ADD
+#include <AudioPolicyVendorControl.h>
+#include <utils/threads.h>
+#include <AudioCustParam.h>
+#include <hardware/AudioCustomVolume.h>
+#include "AudioGainTableParam.h"
+// MTK_AUDIO_ADD>
 
 namespace android {
 
 // ----------------------------------------------------------------------------
+// <MTK_AUDIO_ADD
+#define SONIFICATION_AUX_DIGITAL_VOLUME_FACTOR 0.5
+#define SONIFICATION_AUX_DIGITAL_VOLUME_FACTOR_DB (-6)
+#define POLICY_FIRST_START_DELAY 4000
+// MTK_AUDIO_ADD>
 
 // Attenuation applied to STRATEGY_SONIFICATION streams when a headset is connected: 6dB
 #define SONIFICATION_HEADSET_VOLUME_FACTOR_DB (-6)
@@ -194,6 +206,32 @@ public:
         virtual status_t dump(int fd);
 
         virtual bool isOffloadSupported(const audio_offload_info_t& offloadInfo);
+// <MTK_AUDIO_ADD
+        virtual status_t SetPolicyManagerParameters(int par1,int par2 ,int par3,int par4) ;
+        // add with Sample rate Policy
+        virtual status_t SampleRateRequestFocus (audio_io_handle_t output,audio_stream_type_t stream, int *samplerate);
+        virtual status_t SampleRateUnrequestFocus (audio_io_handle_t output,audio_stream_type_t stream, int samplerate);
+        virtual status_t StartOutputSamplerate (audio_io_handle_t output,audio_stream_type_t stream,audio_session_t session ,int samplerate);
+        virtual status_t StopOutputSamplerate (audio_io_handle_t output,audio_stream_type_t stream,audio_session_t session ,int samplerate);
+        uint32_t GetSampleRateIndex(uint32_t sampleRate);
+        status_t AddSampleRateArray(audio_stream_type_t stream,uint32_t sampleRate);
+        status_t RemoveSampleRateArray(audio_stream_type_t stream,uint32_t sampleRate);
+        void DumpSampleRateArray(void);
+        uint32_t GetSampleRateCount(void);
+        bool CheckFirstActive(void);
+        bool CheckStreamActive(void);
+        status_t SampleRatePolicy(audio_stream_type_t stream,uint32_t sampleRate);
+        status_t PolicyFirstStart(audio_stream_type_t stream,uint32_t sampleRate);
+        status_t PolicyForceReplace(audio_stream_type_t stream,uint32_t sampleRate);
+        status_t PolicyRestore(void);
+        int  PolicyPropertyCheck(void);
+        uint32_t GetFirstTrackSampleRate(void);
+        bool SetFMIndirectMode(uint32_t SampleRate);
+        bool ReleaseFMIndirectMode(uint32_t SampleRate);
+        bool PrimarySupportSampleRate(uint32_t SampleRate);
+        bool PrimaryDeviceSupportSampleRate(uint32_t SampleRate);
+// MTK_AUDIO_ADD>
+
 
         virtual status_t listAudioPorts(audio_port_role_t role,
                                         audio_port_type_t type,
@@ -238,6 +276,57 @@ public:
         routing_strategy getStrategy(audio_stream_type_t stream) const;
 
 protected:
+        // <MTK_AUDIO_ADD
+        enum input_strategy
+        {
+            INPUT_STRATEGY_ADC,
+            INPUT_STRATERY_DIGITAL,
+            INPUT_STRATERY_DAI,
+            INPUT_NUM_STRATEGIES
+        };
+
+        enum output_samplerate_index
+        {
+            OUTPUT_RATE_44_1_INDEX =0,
+            OUTPUT_RATE_48_INDEX,
+            OUTPUT_RATE_88_2_INDEX,
+            OUTPUT_RATE_96_INDEX,
+            OUTPUT_RATE_176_4_INDEX,
+            OUTPUT_RATE_192_INDEX,
+            OUTPUT_NUM_RATE_INDEX
+        };
+        enum output_samplerate
+        {
+            OUTPUT_RATE_44_1 = 44100,
+            OUTPUT_RATE_48 = 48000,
+            OUTPUT_RATE_88_2 = 88200,
+            OUTPUT_RATE_96 = 96000,
+            OUTPUT_RATE_176_4 = 176400,
+            OUTPUT_RATE_192 = 192000,
+        };
+        enum output_samplerate_policy
+        {
+            SampleRate_Do_nothing =0,
+            SampleRate_First_Start,
+            SampleRate_ForceReplace,
+        };
+        enum tty_mode_t
+        {
+            AUD_TTY_OFF  = 0,
+            AUD_TTY_FULL = 1,
+            AUD_TTY_VCO  = 2,
+            AUD_TTY_HCO  = 4,
+            AUD_TTY_ERR  = -1
+        };
+        tty_mode_t      mTty_Ctm;
+
+        uint32_t SampleRateArray[OUTPUT_NUM_RATE_INDEX];
+        uint32_t PolicySampleRate;
+
+        uint32_t mSampleRateFocus;
+        uint32_t mSampleRateFocusCount;
+        Mutex    mSampleRateFocusLock;
+// MTK_AUDIO_ADD>
         // From AudioPolicyManagerObserver
         virtual const AudioPatchCollection &getAudioPatches() const
         {
@@ -272,6 +361,11 @@ protected:
         {
             return mDefaultOutputDevice;
         }
+        // MTK
+        virtual AudioPolicyVendorControl &getAudioPolicyVendorControl()
+        {
+            return mAudioPolicyVendorControl;
+        }
 protected:
         void addOutput(audio_io_handle_t output, sp<SwAudioOutputDescriptor> outputDesc);
         void removeOutput(audio_io_handle_t output);
@@ -288,11 +382,14 @@ protected:
         // "future" device selection (fromCache == false) when called from a context
         //  where conditions are changing (setDeviceConnectionState(), setPhoneState()...) AND
         //  before updateDevicesAndOutputs() is called.
+        // <MTK_AUDIO_ADD
         virtual audio_devices_t getDeviceForStrategy(routing_strategy strategy,
-                                                     bool fromCache);
+                                                     bool fromCache, audio_output_flags_t flags = AUDIO_OUTPUT_FLAG_NONE);
+        virtual audio_devices_t getNewDeviceForTty(audio_devices_t OutputDevice, tty_mode_t tty_mode);
+        // MTK_AUDIO_ADD>
 
         bool isStrategyActive(const sp<AudioOutputDescriptor> outputDesc, routing_strategy strategy,
-                              uint32_t inPastMs = 0, nsecs_t sysTime = 0) const;
+                              uint32_t inPastMs = 0, nsecs_t sysTime = 0, bool bShareHwModule = false) const;
 
         // change the route of the specified output. Returns the number of ms we have slept to
         // allow new routing to take effect in certain cases.
@@ -395,7 +492,7 @@ protected:
         // changed: connected device, phone state, force use, output start, output stop..
         // see getDeviceForStrategy() for the use of fromCache parameter
         audio_devices_t getNewOutputDevice(const sp<AudioOutputDescriptor>& outputDesc,
-                                           bool fromCache);
+                                           bool fromCache, bool bShareHwModule = true);
 
         // updates cache of device used by all strategies (mDeviceForStrategy[])
         // must be called every time a condition that affects the device choice for a given strategy is
@@ -453,6 +550,7 @@ protected:
 
         audio_io_handle_t selectOutputForEffects(const SortedVector<audio_io_handle_t>& outputs);
 
+#if 0   // MTK_AUDIO
         virtual status_t addAudioPatch(audio_patch_handle_t handle, const sp<AudioPatch>& patch)
         {
             return mAudioPatches.addAudioPatch(handle, patch);
@@ -461,6 +559,10 @@ protected:
         {
             return mAudioPatches.removeAudioPatch(handle);
         }
+#else
+        virtual status_t addAudioPatch(audio_patch_handle_t handle, const sp<AudioPatch>& patch);
+        virtual status_t removeAudioPatch(audio_patch_handle_t handle);
+#endif
 
         audio_devices_t availablePrimaryOutputDevices() const
         {
@@ -585,6 +687,34 @@ protected:
 
         // Audio Policy Engine Interface.
         AudioPolicyManagerInterface *mEngine;
+// <MTK_AUDIO_ADD
+        audio_io_handle_t getPrimaryFastOutput();
+        audio_io_handle_t getOffloadOutput();
+        uint32_t mSampleRate_Policy;
+        AudioPolicyVendorControl mAudioPolicyVendorControl;
+        void LoadCustomVolume(void);
+        void InitSamplerateArray(uint32_t init_sample_rate);
+        virtual float computeVolume(audio_stream_type_t stream,
+                            int index,
+                            audio_devices_t device,
+                            const sp<AudioOutputDescriptor>& outputDesc);
+public:
+        AUDIO_GAIN_TABLE_STRUCT mCustomGainTableVolume;
+
+        status_t checkAndSetGainTableAnalogGain(int stream, int index, const sp<AudioOutputDescriptor>& outputDesc,
+                                          audio_devices_t device, int delayMs = 0, bool force = false );
+        int selectGainTableActiveStream(int requestStream);
+        float computeGainTableCustomVolume(int stream, int index, audio_devices_t device);
+private:
+        int                 mVolumeStream;
+        int                 mVolumeIndex;
+        audio_devices_t     mVolumeDevice;
+
+        GainTableParam mGainTable;
+        bool mNativeAutoDetectHeadSetFlag;
+        bool mFMDirectAudioPatchEnable;
+        bool mSkipFMVolControl;
+// MTK_AUDIO_ADD>
 private:
         // Add or remove AC3 DTS encodings based on user preferences.
         void filterSurroundFormats(FormatVector *formatsPtr);
@@ -653,6 +783,27 @@ private:
             param.addInt(String8(AUDIO_PARAMETER_MONO_OUTPUT), (int)mMasterMono);
             mpClientInterface->setParameters(output, param.toString());
         }
+// <MTK_AUDIO_ADD
+            float linearToLog(int volume);
+            int logToLinear(float volume);
+            int mapVol(float &vol, float unitstep);
+            int mapping_Voice_vol(float &vol, float unitstep);
+            float computeCustomVolume(int stream, int index, audio_devices_t device);
+            int getStreamMaxLevels(int  stream);
+            float mapVoiceVoltoCustomVol(unsigned char array[], int volmin, int volmax, float &vol, int vol_stream_type);
+            float mapVoltoCustomVol(unsigned char array[], int volmin, int volmax,float &vol , int stream);
+            AUDIO_CUSTOM_VOLUME_STRUCT mAudioCustVolumeTable;
+            bool isStateInCallOnly(int state);
+            bool isFMActive(void);
+            bool isFMDirectMode(const sp<AudioPatch>& patch);
+            bool mNeedRemapVoiceVolumeIndex;
+#if defined(DOLBY_UDC) || defined(DOLBY_DAP_MOVE_EFFECT)
+    protected:
+            #include "DolbyAudioPolicy.h"
+            DolbyAudioPolicy mDolbyAudioPolicy;
+#endif // DOLBY_END
+// MTK_AUDIO_ADD>
+
 };
 
 };

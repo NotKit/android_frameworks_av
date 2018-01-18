@@ -42,6 +42,10 @@
 #include "AudioMixer.h"
 #include "FastMixer.h"
 
+#ifdef MTK_AUDIO
+#include <audio_utils/pulse.h>
+#endif
+
 namespace android {
 
 /*static*/ const FastMixerState FastMixer::sInitial;
@@ -443,6 +447,11 @@ void FastMixer::onWork()
             memcpy_by_audio_format(buffer, mFormat.mFormat, mMixerBuffer, mMixerBufferFormat,
                     frameCount * Format_channelCount(mFormat));
         }
+
+#ifdef MTK_LATENCY_DETECT_PULSE
+        detectPulse(TAG_FAST_MIXER, 800, 0, (void *)buffer, frameCount, mFormat.mFormat, mSinkChannelCount, mSampleRate);
+#endif
+
         // if non-NULL, then duplicate write() to this non-blocking sink
         NBAIO_Sink* teeSink;
         if ((teeSink = current->mTeeSink) != NULL) {

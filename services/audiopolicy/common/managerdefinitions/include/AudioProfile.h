@@ -121,6 +121,9 @@ public:
 
     void dump(int fd, int spaces) const;
 
+    // <MTK_AUDIO_ADD
+    status_t addChannelMask(audio_channel_mask_t mask);
+    // MTK_AUDIO_ADD>
 private:
     String8  mName;
     audio_format_t mFormat;

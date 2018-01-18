@@ -10,7 +10,7 @@ LOCAL_SANITIZE := unsigned-integer-overflow signed-integer-overflow
 
 LOCAL_MODULE := libstagefright_id3
 
-include $(BUILD_STATIC_LIBRARY)
+include $(MTK_STATIC_LIBRARY)
 
 ################################################################################
 

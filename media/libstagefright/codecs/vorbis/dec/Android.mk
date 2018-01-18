@@ -20,4 +20,4 @@ LOCAL_CFLAGS += -Werror
 LOCAL_CLANG := true
 LOCAL_SANITIZE := signed-integer-overflow unsigned-integer-overflow
 
-include $(BUILD_SHARED_LIBRARY)
+include $(MTK_SHARED_LIBRARY)

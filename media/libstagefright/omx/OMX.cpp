@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,6 +41,7 @@
 #include <OMX_AsString.h>
 #include <OMX_Component.h>
 #include <OMX_VideoExt.h>
+#include <OMX_Core.h>
 
 namespace android {
 
@@ -652,6 +658,13 @@ OMX_ERRORTYPE OMX::OnEvent(
     instance->onEvent(eEvent, nData1, nData2);
 
     sp<OMX::CallbackDispatcher> dispatcher = findDispatcher(node);
+#ifdef MTK_AOSP_ENHANCEMENT
+     //error handling for dispatcher is NULL case
+    if (dispatcher == NULL) {
+        ALOGE("dispatcher is NULL for node %u in OnEvent()", node);
+        return OMX_ErrorNone;
+    }
+#endif
 
     // output rendered events are not processed as regular events until they hit the observer
     if (eEvent == OMX_EventOutputRendered) {
@@ -697,7 +710,18 @@ OMX_ERRORTYPE OMX::OnEmptyBufferDone(
     msg.fenceFd = fenceFd;
     msg.u.buffer_data.buffer = buffer;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+     sp<OMX::CallbackDispatcher> dispatcher = findDispatcher(node);
+    //error handling for dispatcher is NULL case
+    if (dispatcher == NULL) {
+        ALOGE("dispatcher is NULL for node %u in OnEmptyBufferDone()",node);
+        return OMX_ErrorNone;
+    }
+    dispatcher->post(msg);
+#else
     findDispatcher(node)->post(msg);
+#endif
+
 
     return OMX_ErrorNone;
 }
@@ -715,8 +739,38 @@ OMX_ERRORTYPE OMX::OnFillBufferDone(
     msg.u.extended_buffer_data.range_length = pBuffer->nFilledLen;
     msg.u.extended_buffer_data.flags = pBuffer->nFlags;
     msg.u.extended_buffer_data.timestamp = pBuffer->nTimeStamp;
+#ifdef MTK_AOSP_ENHANCEMENT
+    //for transmitting proprietary data
+    msg.u.extended_buffer_data.token_tick = pBuffer->nTickCount;
+    msg.u.extended_buffer_data.token_VA = 0;
+    msg.u.extended_buffer_data.token_PA = 0;
+    msg.u.extended_buffer_data.token_FD = 0;
+    if( OMX_BUFFERFLAG_VDEC_OUTPRIVATE == (OMX_BUFFERFLAG_VDEC_OUTPRIVATE & pBuffer->nFlags) )
+    {
+        //OMX_U32 CMInfo[0x8] = {0};
+        OMX_U32 *CMPtr = (OMX_U32 *)pBuffer->pPlatformPrivate;
+        if( NULL != pBuffer->pPlatformPrivate )
+        {
+            //ALOGD("pPlatformPrivate %p, %x, %x, %d", CMPtr, *(CMPtr+2), *(CMPtr+3), *(CMPtr+7));
+            msg.u.extended_buffer_data.token_VA = *(CMPtr+2);
+            msg.u.extended_buffer_data.token_PA = *(CMPtr+3);
+            msg.u.extended_buffer_data.token_FD = *(CMPtr+7);
+        }
+    }
+#endif//MTK_AOSP_ENHANCEMENT
 
+#ifdef MTK_AOSP_ENHANCEMENT
+     sp<OMX::CallbackDispatcher> dispatcher = findDispatcher(node);
+    //error handling for dispatcher is NULL case
+    if (dispatcher == NULL) {
+        ALOGE("dispatcher is NULL for node %u in OnFillBufferDone()",node);
+        return OMX_ErrorNone;
+    }
+    dispatcher->post(msg);
+#else
     findDispatcher(node)->post(msg);
+#endif
+
 
     return OMX_ErrorNone;
 }

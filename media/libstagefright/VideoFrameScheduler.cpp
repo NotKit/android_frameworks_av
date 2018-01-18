@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2014 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -61,6 +66,10 @@ static const int64_t kReFitThresholdDiv = 100;              // 1%
 static const nsecs_t kMaxAllowedFrameSkip = kNanosIn1s;     // 1 sec
 static const nsecs_t kMinPeriod = kNanosIn1s / 120;         // 120Hz
 static const nsecs_t kRefitRefreshPeriod = 10 * kNanosIn1s; // 10 sec
+
+#ifdef MTK_AOSP_ENHANCEMENT
+int64_t kMaxInt64 = 9223372036854775807ll; // the max value of int64_t: -2^63 ~ 2^63-1
+#endif
 
 VideoFrameScheduler::PLL::PLL()
     : mPeriod(-1),
@@ -155,6 +164,14 @@ bool VideoFrameScheduler::PLL::fit(
         sumYY += y * y;
         lastTime = time;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (((sumXX != 0) && ((int64_t)numSamplesToUse > kMaxInt64 / sumXX)) || ((sumX != 0) && (sumX > kMaxInt64 / sumX))
+        || ((sumXY != 0) && ((int64_t)numSamplesToUse > kMaxInt64 / sumXY)) || ((sumY != 0) && (sumX > kMaxInt64 / sumY))
+        || ((sumY != 0) && (sumXX > kMaxInt64 / sumY)) || ((sumXY != 0) && (sumX > kMaxInt64 / sumXY))) {
+        ALOGE("%d line would overflow", __LINE__);
+        return false;
+    }
+#endif
 
     int64_t div   = (int64_t)numSamplesToUse * sumXX - sumX * sumX;
     if (div == 0) {
@@ -165,6 +182,12 @@ bool VideoFrameScheduler::PLL::fit(
     int64_t b_nom = sumXX * sumY            - sumX * sumXY;
     *a = divRound(a_nom, div);
     *b = divRound(b_nom, div);
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (((sumXY != 0) && (a_nom > kMaxInt64 / sumXY)) || ((sumY != 0) && (b_nom > kMaxInt64 / sumY))) {
+        ALOGE("%d line would overflow", __LINE__);
+        return false;
+    }
+#endif
     // don't use a and b directly as the rounding error is significant
     *err = sumYY - divRound(a_nom * sumXY + b_nom * sumY, div);
     ALOGV("fitting[%zu] a=%lld (%.6f), b=%lld (%.6f), err=%lld (%.6f)",
@@ -353,7 +376,12 @@ void VideoFrameScheduler::updateVsync() {
         if (res == OK) {
             ALOGV("vsync time:%lld period:%lld",
                     (long long)stats.vsyncTime, (long long)stats.vsyncPeriod);
+//#ifdef MTK_AOSP_ENHANCEMENT
+       //     mVsyncTime = stats.vsyncSFTime;//WR as not define this para
+        // ATRACE_INT64("VYSNC_Period(ms)", stats.vsyncPeriod / 1000000);
+//#else
             mVsyncTime = stats.vsyncTime;
+//#endif
             mVsyncPeriod = stats.vsyncPeriod;
         } else {
             ALOGW("getDisplayStats returned %d", res);

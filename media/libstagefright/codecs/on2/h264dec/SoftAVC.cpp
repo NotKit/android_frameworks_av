@@ -253,7 +253,7 @@ bool SoftAVC::drainOneOutputBuffer(int32_t picId, uint8_t* data) {
     OMX_BUFFERHEADERTYPE *outHeader = outInfo->mHeader;
     OMX_U32 frameSize = mWidth * mHeight * 3 / 2;
     if (outHeader->nAllocLen - outHeader->nOffset < frameSize) {
-        android_errorWriteLog(0x534e4554, "27833616");
+        //android_errorWriteLog(0x534e4554, "27833616");
         return false;
     }
     outQueue.erase(outQueue.begin());

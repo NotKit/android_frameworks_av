@@ -157,7 +157,12 @@ static inline size_t sourceFramesNeededWithTimestretch(
     // required is the number of input frames the resampler needs
     size_t required = sourceFramesNeeded(srcSampleRate, dstFramesRequired, dstSampleRate);
     // to deliver this, the time stretcher requires:
+    #ifdef MTK_AUDIO
+    required = (srcSampleRate == dstSampleRate)?  required * (double)speed :  (required * (double)speed + 1 + 1); // accounting for rounding dependencies
+    return required;
+    #else
     return required * (double)speed + 1 + 1; // accounting for rounding dependencies
+    #endif
 }
 
 // Identifies sample rates that we associate with music

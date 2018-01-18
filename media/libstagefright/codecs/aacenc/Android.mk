@@ -142,6 +142,6 @@ else # visualon
   LOCAL_MODULE := libstagefright_soft_aacenc
   LOCAL_MODULE_TAGS := optional
 
-  include $(BUILD_SHARED_LIBRARY)
+  include $(MTK_SHARED_LIBRARY)
 
 endif # $(AAC_LIBRARY)

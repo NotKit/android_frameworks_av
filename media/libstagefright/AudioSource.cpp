@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -64,8 +69,13 @@ AudioSource::AudioSource(
       mInitialReadTimeUs(0),
       mNumFramesReceived(0),
       mNumClientOwnedBuffers(0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("sampleRate: %u, outSampleRate: %u, channelCount: %u",
+            sampleRate, outSampleRate, channelCount);
+#else
     ALOGV("sampleRate: %u, outSampleRate: %u, channelCount: %u",
             sampleRate, outSampleRate, channelCount);
+#endif
     CHECK(channelCount == 1 || channelCount == 2);
     CHECK(sampleRate > 0);
 
@@ -102,12 +112,25 @@ AudioSource::AudioSource(
         if (mInitCheck != OK) {
             mRecord.clear();
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGI("AudioSource constructor, getMinFrameCount return minFrameCount =%zu",minFrameCount);
+        ALOGI("AudioSource constructor, buffer requirment: frameCount,=%d,bufCount =%zu,mInitCheck=%d",\
+                frameCount,bufCount,mInitCheck);
+#endif
     } else {
         mInitCheck = status;
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGI("AudioSource constructor, getMinFrameCount fail !!!,mInitCheck=%d",mInitCheck);
+#endif
     }
 }
 
+
+
 AudioSource::~AudioSource() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("~AudioSource destructor");
+#endif
     if (mStarted) {
         reset();
     }
@@ -135,7 +158,13 @@ status_t AudioSource::start(MetaData *params) {
     if (params && params->findInt64(kKeyTime, &startTimeUs)) {
         mStartTimeUs = startTimeUs;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("start, call AudioRecord start+++,mStartTimeUs=%" PRId64 "",mStartTimeUs);
+#endif
     status_t err = mRecord->start();
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("start, call AudioRecord start ---,err=%d",err);
+#endif
     if (err == OK) {
         mStarted = true;
     } else {
@@ -165,6 +194,9 @@ void AudioSource::waitOutstandingEncodingFrames_l() {
 
 status_t AudioSource::reset() {
     Mutex::Autolock autoLock(mLock);
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("reset");
+#endif
     if (!mStarted) {
         return UNKNOWN_ERROR;
     }
@@ -176,7 +208,13 @@ status_t AudioSource::reset() {
     mStarted = false;
     mFrameAvailableCondition.signal();
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("reset, call AudioRecord stop+++");
+#endif
     mRecord->stop();
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("reset, call AudioRecord stop---");
+#endif
     waitOutstandingEncodingFrames_l();
     releaseQueuedFrames_l();
 
@@ -239,7 +277,9 @@ status_t AudioSource::read(
     if (mInitCheck != OK) {
         return NO_INIT;
     }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGV("read");
+#endif
     while (mStarted && mBuffersReceived.empty()) {
         mFrameAvailableCondition.wait(mLock);
     }
@@ -255,6 +295,9 @@ status_t AudioSource::read(
     // Mute/suppress the recording sound
     int64_t timeUs;
     CHECK(buffer->meta_data()->findInt64(kKeyTime, &timeUs));
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGV("read, buffer kKeyTime timeUs=%" PRId64 "",timeUs);
+#endif
     int64_t elapsedTimeUs = timeUs - mStartTimeUs;
     if (elapsedTimeUs < kAutoRampStartUs) {
         memset((uint8_t *) buffer->data(), 0, buffer->range_length());
@@ -316,12 +359,20 @@ status_t AudioSource::dataCallback(const AudioRecord::Buffer& audioBuffer) {
     // Drop retrieved and previously lost audio data.
     if (mNumFramesReceived == 0 && timeUs < mStartTimeUs) {
         (void) mRecord->getInputFramesLost();
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("dataCallback,Drop audio data at %" PRId64 "/%" PRId64 " us", timeUs, mStartTimeUs);
+#else
         ALOGV("Drop audio data at %" PRId64 "/%" PRId64 " us", timeUs, mStartTimeUs);
+#endif
         return OK;
     }
 
     if (mNumFramesReceived == 0 && mPrevSampleTimeUs == 0) {
         mInitialReadTimeUs = timeUs;
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("dataCallback, receiving time of the first frame mInitialReadTimeUs =%" PRId64 "",mInitialReadTimeUs);
+        ALOGD("mStartTimeUs = %" PRId64 "",mStartTimeUs);
+#endif
         // Initial delay
         if (mStartTimeUs > 0) {
             mStartTimeUs = timeUs - mStartTimeUs;
@@ -331,6 +382,9 @@ status_t AudioSource::dataCallback(const AudioRecord::Buffer& audioBuffer) {
         }
 
         mPrevSampleTimeUs = mStartTimeUs;
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("dataCallback, the revised mStartTimeUs =%" PRId64 "",mStartTimeUs);
+#endif
     }
 
     size_t numLostBytes = 0;
@@ -360,6 +414,9 @@ status_t AudioSource::dataCallback(const AudioRecord::Buffer& audioBuffer) {
         memset(lostAudioBuffer->data(), 0, bufferSize);
         lostAudioBuffer->set_range(0, bufferSize);
         queueInputBuffer_l(lostAudioBuffer, timeUs);
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("dataCallback,queue one input buffer with all 0 data for lost data");
+#endif
     }
 
     if (audioBuffer.size == 0) {
@@ -373,9 +430,13 @@ status_t AudioSource::dataCallback(const AudioRecord::Buffer& audioBuffer) {
             audioBuffer.i16, audioBuffer.size);
     buffer->set_range(0, bufferSize);
     queueInputBuffer_l(buffer, timeUs);
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGV("dataCallback,receive one audio buffer (size =%zu,timeUs=%" PRId64 ")", bufferSize, timeUs);
+#endif
     return OK;
 }
 
+#ifndef MTK_AOSP_ENHANCEMENT
 void AudioSource::queueInputBuffer_l(MediaBuffer *buffer, int64_t timeUs) {
     const size_t bufferSize = buffer->range_length();
     const size_t frameSize = mRecord->frameSize();
@@ -395,7 +456,7 @@ void AudioSource::queueInputBuffer_l(MediaBuffer *buffer, int64_t timeUs) {
     mBuffersReceived.push_back(buffer);
     mFrameAvailableCondition.signal();
 }
-
+#endif
 void AudioSource::trackMaxAmplitude(int16_t *data, int nSamples) {
     for (int i = nSamples; i > 0; --i) {
         int16_t value = *data++;
@@ -418,5 +479,114 @@ int16_t AudioSource::getMaxAmplitude() {
     ALOGV("max amplitude since last call: %d", value);
     return value;
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT //qiushi modify gap reduction
+void AudioSource::queueInputBuffer_l(MediaBuffer *buffer, int64_t timeUs) {
+    const size_t bufferSize = buffer->range_length();
+    const size_t frameSize = mRecord->frameSize();
+
+    if (mNumFramesReceived == 0) {
+        buffer->meta_data()->setInt64(kKeyAnchorTime, mStartTimeUs);
+        ALOGD("queueInputBuffer_l,first fram kKeyAnchorTime =%" PRId64 "",mStartTimeUs);
+    }
+    mNumFramesReceived += bufferSize / frameSize;
+    const int64_t timestampUs =  mStartTimeUs + ((1000000LL * mNumFramesReceived) + (mSampleRate >> 1)) / mSampleRate;
+    ALOGV("queueInputBuffer_l,containing %" PRId64 " frams in this buffer,mPrevSampleTimeUs( %" PRId64 " )," \
+            "receiving drift timeUs( %" PRId64 " ),new calculated timestampUs( %" PRId64 " ),", \
+            mNumFramesReceived, mPrevSampleTimeUs, timeUs - mInitialReadTimeUs, timestampUs);
+    buffer->meta_data()->setInt64(kKeyTime, mPrevSampleTimeUs);
+    buffer->meta_data()->setInt64(kKeyDriftTime, timeUs - mInitialReadTimeUs);
+    mPrevSampleTimeUs = timestampUs;
+#ifdef CONFIG_MT_ENG_BUILD
+    if (mBuffersReceived.size() > 130) {
+        ALOGW("Queued buffers > 130, dropped frames!!");
+        while (mBuffersReceived.size() > 100) {
+            MediaBuffer *buffer = *mBuffersReceived.begin();
+            mBuffersReceived.erase(mBuffersReceived.begin());
+            buffer->release();
+        }
+    }
+#endif
+
+    mBuffersReceived.push_back(buffer);
+    mFrameAvailableCondition.signal();
+}
+
+
+//MTK80721 HDRecord 2011-12-23
+//#ifdef MTK_AUDIO_HD_REC_SUPPORT
+AudioSource::AudioSource(
+        audio_source_t inputSource, const String16 &opPackageName,
+        uint32_t sampleRate, String8 Params, uint32_t channelCount, uint32_t outSampleRate,
+        uid_t uid, pid_t pid)
+    : mRecord(NULL),
+      mStarted(false),
+      mSampleRate(sampleRate),
+      mOutSampleRate(outSampleRate > 0 ? outSampleRate : sampleRate),
+      mTrackMaxAmplitude(false),
+      mStartTimeUs(0),
+      mMaxAmplitude(0),
+      mPrevSampleTimeUs(0),
+      mFirstSampleTimeUs(-1ll),
+      mInitialReadTimeUs(0),
+      mNumFramesReceived(0),
+      mNumClientOwnedBuffers(0) {
+
+    ALOGI("sampleRate: %u, outSampleRate: %u, channelCount: %u",
+            sampleRate, outSampleRate, channelCount);
+    CHECK(channelCount == 1 || channelCount == 2);
+    CHECK(sampleRate > 0);
+
+    size_t minFrameCount;
+    status_t status = AudioRecord::getMinFrameCount(&minFrameCount,
+                                           sampleRate,
+                                           AUDIO_FORMAT_PCM_16_BIT,
+                                           audio_channel_in_mask_from_count(channelCount));
+    if (status == OK) {
+        // make sure that the AudioRecord callback never returns more than the maximum
+        // buffer size
+        uint32_t frameCount = kMaxBufferSize / sizeof(int16_t) / channelCount;
+
+        // make sure that the AudioRecord total buffer size is large enough
+        size_t bufCount = 2;
+        while ((bufCount * frameCount) < minFrameCount) {
+            bufCount++;
+        }
+        int iframecount = bufCount * frameCount;
+        iframecount >>=1;
+
+        ALOGD("minFrameCount=%zu,iframecount=%d,total framecount=%d,notify framecount=%d",
+            minFrameCount,iframecount,iframecount*3,iframecount>>1);
+
+        mRecord = new AudioRecord(
+                    inputSource, Params, sampleRate, AUDIO_FORMAT_PCM_16_BIT,
+                    audio_channel_in_mask_from_count(channelCount),
+                    opPackageName,
+                    3*iframecount,
+                    AudioRecordCallbackFunction,
+                    this,
+                    iframecount,
+                    AUDIO_SESSION_ALLOCATE,
+                    AudioRecord::TRANSFER_DEFAULT,
+                    AUDIO_INPUT_FLAG_NONE,
+                    uid,
+                    pid);
+
+        mInitCheck = mRecord->initCheck();
+        if (mInitCheck != OK) {
+            mRecord.clear();
+        }
+        ALOGI("AudioSource constructor, getMinFrameCount return minFrameCount =%zu",minFrameCount);
+        ALOGI("AudioSource constructor, buffer requirment: frameCount,=%d,bufCount =%zu,mInitCheck=%d",\
+                frameCount,bufCount,mInitCheck);
+    } else {
+        mInitCheck = status;
+        ALOGI("AudioSource constructor, getMinFrameCount fail !!!,mInitCheck=%d",mInitCheck);
+    }
+}
+
+
+#endif //qiushi modify gap reduction
+
 
 }  // namespace android

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2012, The Android Open Source Project
 **
@@ -123,6 +128,16 @@ public:
     bool isInvalid() const { return mIsInvalid; }
     int fastIndex() const { return mFastIndex; }
 
+    //<MTK_AUDIO_ADD
+    virtual void releaseBuffer(AudioBufferProvider::Buffer* buffer);
+    bool                       mPauseFlag;
+    bool                       mPauseFlagCanRelease;
+    Condition                  mPauseCond;
+    Mutex                      mPauseCondLock;
+    bool                       mIsOKonThread;
+    bool                       mIsPausedToFlush;
+    //MTK_AUDIO_ADD>
+
 protected:
 
     // FILLED state is used for suppressing volume ramp at begin of playing
@@ -170,12 +185,19 @@ private:
     bool                mResumeToStopping; // track was paused in stopping state.
     bool                mFlushHwPending; // track requests for thread flush
     audio_output_flags_t mFlags;
+
+  //<MTK_AUDIO_ADD
+    mutable size_t      mReadyCheckCount; // checking counter to force track play
+    //MTK_AUDIO_ADD>
 };  // end of Track
 
 
 // playback track, used by DuplicatingThread
 class OutputTrack : public Track {
 public:
+    //#ifdef MTK_CROSSMOUNT_SUPPORT
+    void    signalNewTrack();
+    //#endif
 
     class Buffer : public AudioBufferProvider::Buffer {
     public:
@@ -209,13 +231,22 @@ private:
     void                restartIfDisabled();
 
     // Maximum number of pending buffers allocated by OutputTrack::write()
-    static const uint8_t kMaxOverFlowBuffers = 10;
-
+//#if defined (MTK_CROSSMOUNT_SUPPORT) && defined( CROSSMOUNT_LATENCY_ENHANCE)
+    static const uint8_t kMaxOverFlowBuffers = 20;
+//#else
+//    static const uint8_t kMaxOverFlowBuffers = 10;
+//#endif
     Vector < Buffer* >          mBufferQueue;
     AudioBufferProvider::Buffer mOutBuffer;
     bool                        mActive;
     DuplicatingThread* const mSourceThread; // for waitTimeMs() in write()
     AudioTrackClientProxy*      mClientProxy;
+//#ifdef MTK_CROSSMOUNT_SUPPORT
+    audio_devices_t         mOutDevice;   // output device
+    bool mFirstblock;
+    bool mNewRemoteTrack;
+    bool mIsCrossMount;
+//   #endif
 };  // end of OutputTrack
 
 // playback track, used by PatchPanel

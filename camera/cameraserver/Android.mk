@@ -15,9 +15,27 @@
 LOCAL_PATH:= $(call my-dir)
 
 include $(CLEAR_VARS)
+LOCAL_SRC_FILES := register.cpp
+
+# mmsdk related
+ifeq ($(MTK_CAM_MMSDK_SUPPORT),$(filter $(MTK_CAM_MMSDK_SUPPORT),yes))
+LOCAL_C_INCLUDES += \
+    $(TOP)/$(MTK_PATH_SOURCE)/frameworks/av/services/mmsdk/include/
+
+LOCAL_CFLAGS += -DMTK_CAM_MMSDK_SUPPORT
+endif
+# ============
+
+LOCAL_MODULE := libregistercsext
+include $(BUILD_STATIC_LIBRARY)
+
+include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES:= \
 	main_cameraserver.cpp
+
+LOCAL_STATIC_LIBRARIES := \
+        libregistercsext
 
 LOCAL_SHARED_LIBRARIES := \
 	libcameraservice \
@@ -25,6 +43,12 @@ LOCAL_SHARED_LIBRARIES := \
 	libutils \
 	libbinder \
 	libcamera_client
+
+# mmsdk related
+ifeq ($(MTK_CAM_MMSDK_SUPPORT),$(filter $(MTK_CAM_MMSDK_SUPPORT),yes))
+LOCAL_SHARED_LIBRARIES += libmmsdkservice
+endif
+# ============
 
 LOCAL_MODULE:= cameraserver
 LOCAL_32_BIT_ONLY := true

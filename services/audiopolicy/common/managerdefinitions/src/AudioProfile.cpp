@@ -224,6 +224,23 @@ void AudioProfile::dump(int fd, int spaces) const
     }
     write(fd, result.string(), result.size());
 }
+#ifdef MTK_AUDIO
+status_t AudioProfile::addChannelMask(audio_channel_mask_t mask)
+{
+    if (mChannelMasks.indexOf(mask) < 0) {
+        mChannelMasks.add(mask);
+        return NO_ERROR;
+    } else {
+        return BAD_VALUE;
+    }
+}
+#else
+status_t AudioProfile::addChannelMask(audio_channel_mask_t mask __unused)
+{
+    ALOGE("%s unsupport", __FUNCTION__);
+    return INVALID_OPERATION;
+}
+#endif
 
 status_t AudioProfileVector::checkExactProfile(uint32_t samplingRate,
                                                audio_channel_mask_t channelMask,

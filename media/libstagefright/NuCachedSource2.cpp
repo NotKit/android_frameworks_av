@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,6 +33,7 @@
 #include <media/stagefright/foundation/AMessage.h>
 #include <media/stagefright/MediaErrors.h>
 
+#include <media/MtkMMLog.h>
 namespace android {
 
 struct PageCache {
@@ -213,6 +219,9 @@ NuCachedSource2::NuCachedSource2(
         // Makes no sense to disconnect and do keep-alives...
         mKeepAliveIntervalUs = 0;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    init();
+#endif
 
     mLooper->setName("NuCachedSource2");
     mLooper->registerHandler(mReflector);
@@ -229,9 +238,17 @@ NuCachedSource2::NuCachedSource2(
 }
 
 NuCachedSource2::~NuCachedSource2() {
+    MM_LOGI("~NuCachedSource2");
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mLooper != NULL) {
+#endif
     mLooper->stop();
     mLooper->unregisterHandler(mReflector->id());
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    }
+    if (mCache != NULL)
+#endif
     delete mCache;
     mCache = NULL;
 }
@@ -257,7 +274,13 @@ status_t NuCachedSource2::getEstimatedBandwidthKbps(int32_t *kbps) {
 }
 
 void NuCachedSource2::disconnect() {
-    if (mSource->flags() & kIsHTTPBasedSource) {
+    MM_LOGI("mSource:%d", (mSource != NULL));
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mSource != NULL && mSource->flags() & kIsHTTPBasedSource)
+#else
+    if (mSource->flags() & kIsHTTPBasedSource)
+#endif
+    {
         ALOGV("disconnecting HTTPBasedSource");
 
         {
@@ -319,6 +342,7 @@ void NuCachedSource2::onMessageReceived(const sp<AMessage> &msg) {
 }
 
 void NuCachedSource2::fetchInternal() {
+    MM_LOGI("fetchInternal, at %lld + %zu", (long long)mCacheOffset, mCache->totalSize());
     ALOGV("fetchInternal");
 
     bool reconnect = false;
@@ -337,6 +361,7 @@ void NuCachedSource2::fetchInternal() {
     if (reconnect) {
         status_t err =
             mSource->reconnectAtOffset(mCacheOffset + mCache->totalSize());
+    MM_LOGI("reconnectAtOffset: %lld", (long long)(mCacheOffset + mCache->totalSize()));
 
         Mutex::Autolock autoLock(mLock);
 
@@ -409,7 +434,12 @@ void NuCachedSource2::onFetch() {
 
     if (mFetching || keepAlive) {
         if (keepAlive) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGI("Keep alive, mCacheOffset = %llu, mCache->totalSize() = %zu, mLastAccessPos = %lld",
+                  (unsigned long long)mCacheOffset, mCache->totalSize(), (long long)mLastAccessPos);
+#else
             ALOGI("Keep alive");
+#endif
         }
 
         fetchInternal();
@@ -422,7 +452,7 @@ void NuCachedSource2::onFetch() {
 
             if (mDisconnectAtHighwatermark
                     && (mSource->flags() & DataSource::kIsHTTPBasedSource)) {
-                ALOGV("Disconnecting at high watermark");
+                ALOGI("Disconnecting at high watermark");
                 static_cast<HTTPBase *>(mSource.get())->disconnect();
                 mFinalStatus = -EAGAIN;
             }
@@ -434,7 +464,11 @@ void NuCachedSource2::onFetch() {
 
     int64_t delayUs;
     if (mFetching) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        showBW();
+#endif
         if (mFinalStatus != OK && mNumRetriesLeft > 0) {
+            MM_LOGI("retry left times = %d", mNumRetriesLeft);
             // We failed this time and will try again in 3 seconds.
             delayUs = 3000000ll;
         } else {
@@ -494,6 +528,10 @@ void NuCachedSource2::restartPrefetcherIfNecessary_l(
         return;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("mCache->totalSize() >= highwater %d", mCache->totalSize() >= mHighwaterThresholdBytes);
+#endif
+
     size_t maxBytes = mLastAccessPos - mCacheOffset;
 
     if (!force) {
@@ -521,6 +559,12 @@ ssize_t NuCachedSource2::readAt(off64_t offset, void *data, size_t size) {
         return ERROR_END_OF_STREAM;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (offset < 0 || size > (size_t)mHighwaterThresholdBytes) {
+        ALOGE("Error: offset:%lld size:%zu", (long long)offset, size);
+        return -EINVAL;
+    }
+#endif
     // If the request can be completely satisfied from the cache, do so.
 
     if (offset >= mCacheOffset
@@ -533,6 +577,13 @@ ssize_t NuCachedSource2::readAt(off64_t offset, void *data, size_t size) {
         return size;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    static int readID = 0;
+    readID++;
+    ALOGD("+++Cache (%d) is missed %lld(%zu) at (%lld + %zu)+++",
+            readID, (long long)offset, size, (long long)mCacheOffset, mCache->totalSize());
+    mIsCacheMissed = true;
+#endif
     sp<AMessage> msg = new AMessage(kWhatRead, mReflector);
     msg->setInt64("offset", offset);
     msg->setPointer("data", data);
@@ -552,7 +603,11 @@ ssize_t NuCachedSource2::readAt(off64_t offset, void *data, size_t size) {
 
     int32_t result;
     CHECK(mAsyncResult->findInt32("result", &result));
+    MM_LOGI("---Cache (%d) is shot again, result = %d ---", readID, result);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    mIsCacheMissed = false;
+#endif
     mAsyncResult.clear();
 
     if (result > 0) {
@@ -579,6 +634,13 @@ size_t NuCachedSource2::approxDataRemaining_l(status_t *finalStatus) const {
         // Pretend that everything is fine until we're out of retries.
         *finalStatus = OK;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    // cache miss, mLastAccessPos would not be set to new vaule. So the old mLastAccessPos is not correct.
+    if (mIsCacheMissed) {
+        ALOGV("cache missed remaining 0");
+        return 0;
+    }
+#endif
 
     off64_t lastBytePosCached = mCacheOffset + mCache->totalSize();
     if (mLastAccessPos < lastBytePosCached) {
@@ -625,6 +687,12 @@ ssize_t NuCachedSource2::readInternal(off64_t offset, void *data, size_t size) {
 
     if (mFinalStatus != OK && mNumRetriesLeft == 0) {
         if (delta >= mCache->totalSize()) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (mFinalStatus == -EAGAIN) {
+                ALOGE("retry fail and mFinalStatusis -EAGAIN, return -ECANCELED");
+                return -ECANCELED;
+            }
+#endif
             return mFinalStatus;
         }
 
@@ -634,6 +702,12 @@ ssize_t NuCachedSource2::readInternal(off64_t offset, void *data, size_t size) {
             avail = size;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (mDisconnecting) {
+            ALOGI("Is disconnecting, data maybe free");
+            return mFinalStatus;
+        }
+#endif
         mCache->copy(delta, data, avail);
 
         return avail;
@@ -665,6 +739,9 @@ status_t NuCachedSource2::seekInternal_l(off64_t offset) {
     size_t totalSize = mCache->totalSize();
     CHECK_EQ(mCache->releaseFromStart(totalSize), totalSize);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    mFinalStatus = OK;
+#endif
     mNumRetriesLeft = kMaxNumRetries;
     mFetching = true;
 
@@ -772,5 +849,38 @@ void NuCachedSource2::RemoveCacheSpecificHeaders(
         ALOGV("Client requested disconnection at highwater mark");
     }
 }
+#ifdef MTK_AOSP_ENHANCEMENT
+int64_t NuCachedSource2::getMaxCacheSize() {
+    return mHighwaterThresholdBytes;
+}
+
+bool NuCachedSource2::estimateBandwidth(int32_t *kbps) {
+    if (mSource->flags() & kIsHTTPBasedSource) {
+        HTTPBase* source = static_cast<HTTPBase *>(mSource.get());
+        return source->estimateBandwidth(kbps);
+    }
+    return false;
+}
+
+void NuCachedSource2::showBW() {
+    static int64_t LastUpdateUs = 0;
+
+    int64_t nowUs = ALooper::GetNowUs();
+    if (nowUs - LastUpdateUs > 2000*1000ll) {
+        int32_t bps = 0;
+        estimateBandwidth(&bps);
+        ALOGI("bandwidth = %d bytes/s", bps >> 3);
+        LastUpdateUs = nowUs;
+    }
+}
+
+void NuCachedSource2::init() {
+    mIsCacheMissed = false;
+    ALOGI("lowwater = %zu bytes, highwater = %zu bytes, keepalive = %lld us",
+         mLowwaterThresholdBytes,
+         mHighwaterThresholdBytes,
+         (long long)mKeepAliveIntervalUs);
+}
+#endif
 
 }  // namespace android

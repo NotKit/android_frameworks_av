@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -60,6 +65,10 @@ private:
         unsigned long mTrackNum;
         bool mEncrypted;
         sp<MetaData> mMeta;
+#ifdef MTK_AOSP_ENHANCEMENT
+        //Need Refine: use android getTrack,no need define mTrack
+    const mkvparser::Track* mTrack;
+#endif
         const MatroskaExtractor *mExtractor;
         Vector<const mkvparser::CuePoint*> mCuePoints;
 
@@ -86,6 +95,9 @@ private:
 
     MatroskaExtractor(const MatroskaExtractor &);
     MatroskaExtractor &operator=(const MatroskaExtractor &);
+#ifdef MTK_AOSP_ENHANCEMENT
+    sp<MetaData> mFileMetaData;
+#endif
 };
 
 bool SniffMatroska(

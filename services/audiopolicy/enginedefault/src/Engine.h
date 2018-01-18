@@ -58,9 +58,9 @@ private:
         {
             return mPolicyEngine->getDeviceForInputSource(inputSource);
         }
-        virtual audio_devices_t getDeviceForStrategy(routing_strategy strategy) const
+        virtual audio_devices_t getDeviceForStrategy(routing_strategy strategy, audio_output_flags_t flags) const
         {
-            return mPolicyEngine->getDeviceForStrategy(strategy);
+            return mPolicyEngine->getDeviceForStrategy(strategy, flags);
         }
         virtual routing_strategy getStrategyForStream(audio_stream_type_t stream)
         {
@@ -124,11 +124,12 @@ private:
 
     routing_strategy getStrategyForStream(audio_stream_type_t stream);
     routing_strategy getStrategyForUsage(audio_usage_t usage);
-    audio_devices_t getDeviceForStrategy(routing_strategy strategy) const;
+    audio_devices_t getDeviceForStrategy(routing_strategy strategy, audio_output_flags_t flags = AUDIO_OUTPUT_FLAG_NONE) const;
     audio_devices_t getDeviceForStrategyInt(routing_strategy strategy,
                                             DeviceVector availableOutputDevices,
                                             DeviceVector availableInputDevices,
-                                            const SwAudioOutputCollection &outputs) const;
+                                            const SwAudioOutputCollection &outputs,
+                                            audio_output_flags_t flags = AUDIO_OUTPUT_FLAG_NONE) const;
     audio_devices_t getDeviceForInputSource(audio_source_t inputSource) const;
     audio_mode_t mPhoneState;  /**< current phone state. */
 

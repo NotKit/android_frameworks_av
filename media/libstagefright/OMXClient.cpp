@@ -33,6 +33,14 @@
 
 #include "include/OMX.h"
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#define RETURN_IF_ERROR() \
+    if (mNodeLocation.isEmpty()){ \
+        ALOGE("@%d mNodeLocation is empty!!", __LINE__);\
+        return UNKNOWN_ERROR;\
+    }
+#endif
+
 namespace android {
 
 static bool sCodecProcessEnabled = true;
@@ -210,6 +218,12 @@ MuxOMX::node_location MuxOMX::getPreferredCodecLocation(const char *name) {
         // all codecs go to codec process unless excluded using system property, in which case
         // all non-secure decoders, OMX.google.* codecs and encoders can go in the codec process
         // (non-OMX.google.* encoders can be excluded using system property.)
+#ifdef MTK_AOSP_ENHANCEMENT
+        //FIXME: Workaround for WFD + HDCP, need to return to Android N design later
+        if (strcasestr(name, "encoder") && !strncasecmp(name, "OMX.MTK.", 8)) {
+            return MEDIAPROCESS;
+        }
+#endif
         if ((strcasestr(name, "decoder")
                         && strcasestr(name, ".secure") != name + strlen(name) - 7)
                 || (strcasestr(name, "encoder")
@@ -253,6 +267,9 @@ const sp<IOMX> &MuxOMX::getOMX_l(node_id node) const {
 }
 
 bool MuxOMX::livesLocally(node_id node, pid_t pid) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->livesLocally(node, pid);
 }
 
@@ -303,6 +320,10 @@ status_t MuxOMX::allocateNode(
 status_t MuxOMX::freeNode(node_id node) {
     Mutex::Autolock autoLock(mLock);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
+
     // exit if we have already freed the node
     if (mNodeLocation.indexOfKey(node) < 0) {
         ALOGD("MuxOMX::freeNode: node %d seems to be released already --- ignoring.", node);
@@ -322,46 +343,70 @@ status_t MuxOMX::freeNode(node_id node) {
 
 status_t MuxOMX::sendCommand(
         node_id node, OMX_COMMANDTYPE cmd, OMX_S32 param) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->sendCommand(node, cmd, param);
 }
 
 status_t MuxOMX::getParameter(
         node_id node, OMX_INDEXTYPE index,
         void *params, size_t size) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->getParameter(node, index, params, size);
 }
 
 status_t MuxOMX::setParameter(
         node_id node, OMX_INDEXTYPE index,
         const void *params, size_t size) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->setParameter(node, index, params, size);
 }
 
 status_t MuxOMX::getConfig(
         node_id node, OMX_INDEXTYPE index,
         void *params, size_t size) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->getConfig(node, index, params, size);
 }
 
 status_t MuxOMX::setConfig(
         node_id node, OMX_INDEXTYPE index,
         const void *params, size_t size) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->setConfig(node, index, params, size);
 }
 
 status_t MuxOMX::getState(
         node_id node, OMX_STATETYPE* state) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->getState(node, state);
 }
 
 status_t MuxOMX::storeMetaDataInBuffers(
         node_id node, OMX_U32 port_index, OMX_BOOL enable, MetadataBufferType *type) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->storeMetaDataInBuffers(node, port_index, enable, type);
 }
 
 status_t MuxOMX::prepareForAdaptivePlayback(
         node_id node, OMX_U32 port_index, OMX_BOOL enable,
         OMX_U32 maxFrameWidth, OMX_U32 maxFrameHeight) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->prepareForAdaptivePlayback(
             node, port_index, enable, maxFrameWidth, maxFrameHeight);
 }
@@ -369,29 +414,44 @@ status_t MuxOMX::prepareForAdaptivePlayback(
 status_t MuxOMX::configureVideoTunnelMode(
         node_id node, OMX_U32 portIndex, OMX_BOOL enable,
         OMX_U32 audioHwSync, native_handle_t **sidebandHandle) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->configureVideoTunnelMode(
             node, portIndex, enable, audioHwSync, sidebandHandle);
 }
 
 status_t MuxOMX::enableNativeBuffers(
         node_id node, OMX_U32 port_index, OMX_BOOL graphic, OMX_BOOL enable) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->enableNativeBuffers(node, port_index, graphic, enable);
 }
 
 status_t MuxOMX::getGraphicBufferUsage(
         node_id node, OMX_U32 port_index, OMX_U32* usage) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->getGraphicBufferUsage(node, port_index, usage);
 }
 
 status_t MuxOMX::useBuffer(
         node_id node, OMX_U32 port_index, const sp<IMemory> &params,
         buffer_id *buffer, OMX_U32 allottedSize) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->useBuffer(node, port_index, params, buffer, allottedSize);
 }
 
 status_t MuxOMX::useGraphicBuffer(
         node_id node, OMX_U32 port_index,
         const sp<GraphicBuffer> &graphicBuffer, buffer_id *buffer) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->useGraphicBuffer(
             node, port_index, graphicBuffer, buffer);
 }
@@ -399,6 +459,9 @@ status_t MuxOMX::useGraphicBuffer(
 status_t MuxOMX::updateGraphicBufferInMeta(
         node_id node, OMX_U32 port_index,
         const sp<GraphicBuffer> &graphicBuffer, buffer_id buffer) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->updateGraphicBufferInMeta(
             node, port_index, graphicBuffer, buffer);
 }
@@ -406,6 +469,9 @@ status_t MuxOMX::updateGraphicBufferInMeta(
 status_t MuxOMX::updateNativeHandleInMeta(
         node_id node, OMX_U32 port_index,
         const sp<NativeHandle> &nativeHandle, buffer_id buffer) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->updateNativeHandleInMeta(
             node, port_index, nativeHandle, buffer);
 }
@@ -413,6 +479,9 @@ status_t MuxOMX::updateNativeHandleInMeta(
 status_t MuxOMX::createInputSurface(
         node_id node, OMX_U32 port_index, android_dataspace dataSpace,
         sp<IGraphicBufferProducer> *bufferProducer, MetadataBufferType *type) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     status_t err = getOMX(node)->createInputSurface(
             node, port_index, dataSpace, bufferProducer, type);
     return err;
@@ -437,16 +506,25 @@ status_t MuxOMX::createPersistentInputSurface(
 status_t MuxOMX::setInputSurface(
         node_id node, OMX_U32 port_index,
         const sp<IGraphicBufferConsumer> &bufferConsumer, MetadataBufferType *type) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->setInputSurface(node, port_index, bufferConsumer, type);
 }
 
 status_t MuxOMX::signalEndOfInputStream(node_id node) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->signalEndOfInputStream(node);
 }
 
 status_t MuxOMX::allocateSecureBuffer(
         node_id node, OMX_U32 port_index, size_t size,
         buffer_id *buffer, void **buffer_data, sp<NativeHandle> *native_handle) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->allocateSecureBuffer(
             node, port_index, size, buffer, buffer_data, native_handle);
 }
@@ -454,16 +532,25 @@ status_t MuxOMX::allocateSecureBuffer(
 status_t MuxOMX::allocateBufferWithBackup(
         node_id node, OMX_U32 port_index, const sp<IMemory> &params,
         buffer_id *buffer, OMX_U32 allottedSize) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->allocateBufferWithBackup(
             node, port_index, params, buffer, allottedSize);
 }
 
 status_t MuxOMX::freeBuffer(
         node_id node, OMX_U32 port_index, buffer_id buffer) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->freeBuffer(node, port_index, buffer);
 }
 
 status_t MuxOMX::fillBuffer(node_id node, buffer_id buffer, int fenceFd) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->fillBuffer(node, buffer, fenceFd);
 }
 
@@ -472,6 +559,9 @@ status_t MuxOMX::emptyBuffer(
         buffer_id buffer,
         OMX_U32 range_offset, OMX_U32 range_length,
         OMX_U32 flags, OMX_TICKS timestamp, int fenceFd) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->emptyBuffer(
             node, buffer, range_offset, range_length, flags, timestamp, fenceFd);
 }
@@ -480,6 +570,9 @@ status_t MuxOMX::getExtensionIndex(
         node_id node,
         const char *parameter_name,
         OMX_INDEXTYPE *index) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->getExtensionIndex(node, parameter_name, index);
 }
 
@@ -489,6 +582,9 @@ status_t MuxOMX::setInternalOption(
         InternalOptionType type,
         const void *data,
         size_t size) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    RETURN_IF_ERROR();
+#endif
     return getOMX(node)->setInternalOption(node, port_index, type, data, size);
 }
 

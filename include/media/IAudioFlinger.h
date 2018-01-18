@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,6 +40,7 @@
 #include <media/IEffectClient.h>
 #include <utils/String8.h>
 
+
 namespace android {
 
 // ----------------------------------------------------------------------------
@@ -44,6 +50,15 @@ class IAudioFlinger : public IInterface
 public:
     DECLARE_META_INTERFACE(AudioFlinger);
 
+    // or-able bits shared by createTrack and openRecord, but not all combinations make sense
+    enum {
+//<MTK_AUDIO_ADD
+// do not use same value defined in audio_output_flags_t
+        TRACK_REMOTE = 0x1000,  // client requests a remote submix track for CrossMount
+        TRACK_BOOT = 0x2000,    // client requests a special track for BOOT Animation for fixed volume playback
+//MTK_AUDIO_ADD>
+    };
+    typedef uint32_t track_flags_t;
 
     // invariant on exit for all APIs that return an sp<>:
     //   (return value != 0) == (*status == NO_ERROR)
@@ -245,6 +260,34 @@ public:
 
     // Returns the number of frames per audio HAL buffer.
     virtual size_t frameCountHAL(audio_io_handle_t ioHandle) const = 0;
+
+//<MTK_AUDIO_ADD
+    // Interfaces mtk added
+    //add by Tina, set acf preview param
+    virtual status_t SetACFPreviewParameter(void *ptr, size_t len) = 0;
+    virtual status_t SetHCFPreviewParameter(void *ptr, size_t len) = 0;
+    /////////////////////////////////////////////////////////////////////////
+    //    for PCMxWay Interface API ...
+    /////////////////////////////////////////////////////////////////////////
+    virtual int xWayPlay_Start(int sample_rate) = 0;
+    virtual int xWayPlay_Stop(void) = 0;
+    virtual int xWayPlay_Write(void *buffer, int size_bytes) = 0;
+    virtual int xWayPlay_GetFreeBufferCount(void) = 0;
+    virtual int xWayRec_Start(int sample_rate) = 0;
+    virtual int xWayRec_Stop(void) = 0;
+    virtual int xWayRec_Read(void *buffer, int size_bytes) = 0;
+    //wendy
+    virtual int ReadRefFromRing(void*buf, uint32_t datasz, void* DLtime) = 0;
+    virtual int GetVoiceUnlockULTime(void* DLtime) = 0;
+    virtual int SetVoiceUnlockSRC(uint outSR, uint outCH) = 0;
+    virtual bool startVoiceUnlockDL() = 0;
+    virtual bool stopVoiceUnlockDL() = 0;
+    virtual void freeVoiceUnlockDLInstance () = 0;
+    virtual int GetVoiceUnlockDLLatency() = 0;
+    virtual bool getVoiceUnlockDLInstance() = 0;
+    virtual status_t getHDMICapability(int* HDMI_ChannelCount, int* HDMI_Bitwidth,int* HDMI_MaxSampleRate) = 0;
+    virtual status_t  setSurroundOnOff(int value) = 0;
+    virtual status_t  setSurroundMode(int value) = 0;
 };
 
 

@@ -1,4 +1,10 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -344,6 +350,14 @@ static status_t parseStreamMuxConfig(
             unsigned otherDataLenEsc;
             do {
                 (*otherDataLenBits) <<= 8;
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (bits->numBitsLeft() < 9) {
+                    ALOGW("error otherDataLenBits in config");
+                    *otherDataLenBits = 0;
+                    *otherDataPresent = 0;
+                    return OK;
+                }
+#endif
                 otherDataLenEsc = bits->getBits(1);
                 unsigned otherDataLenTmp = bits->getBits(8);
                 (*otherDataLenBits) += otherDataLenTmp;
@@ -383,6 +397,7 @@ sp<ABuffer> AMPEG4AudioAssembler::removeLATMFraming(const sp<ABuffer> &buffer) {
                         ALOGW("Malformed buffer received");
                         return out;
                     }
+
                     tmp = ptr[offset++];
                     muxSlotLengthBytes += tmp;
                 } while (tmp == 0xff);
@@ -407,7 +422,7 @@ sp<ABuffer> AMPEG4AudioAssembler::removeLATMFraming(const sp<ABuffer> &buffer) {
                 break;
             }
         }
-        
+
         CHECK_LT(offset, buffer->size());
         CHECK_LE(payloadLength, buffer->size() - offset);
 
@@ -419,7 +434,12 @@ sp<ABuffer> AMPEG4AudioAssembler::removeLATMFraming(const sp<ABuffer> &buffer) {
         if (mOtherDataPresent) {
             // We want to stay byte-aligned.
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            int bits = mOtherDataLenBits % 8;
+            CHECK(bits == 0);
+#else
             CHECK((mOtherDataLenBits % 8) == 0);
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
             CHECK_LE(offset + (mOtherDataLenBits / 8), buffer->size());
             offset += mOtherDataLenBits / 8;
         }
@@ -519,7 +539,11 @@ ARTPAssembler::AssemblyStatus AMPEG4AudioAssembler::addPacket(
         LOG(VERBOSE) << "Not the sequence number I expected";
 #endif
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        return getAssembleStatus(queue, mNextExpectedSeqNo);
+#else
         return WRONG_SEQUENCE_NUMBER;
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
     }
 
     uint32_t rtpTime;
@@ -579,4 +603,13 @@ void AMPEG4AudioAssembler::onByeReceived() {
     msg->post();
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+void AMPEG4AudioAssembler::evaluateDuration(const sp<ARTPSource> &source,
+        const sp<ABuffer> &buffer) {
+    // assume frameLength of AAC is 1024
+    if(buffer.get() == NULL)
+            ALOGI("no buffer");
+    source->updateExpectedTimeoutUs((int32_t)(1024 * (mNumSubFrames + 1)));
+}
+#endif // #ifdef MTK_AOSP_ENHANCEMENT
 }  // namespace android

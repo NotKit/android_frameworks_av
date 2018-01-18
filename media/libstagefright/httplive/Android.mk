@@ -32,4 +32,4 @@ ifeq ($(TARGET_ARCH),arm)
     LOCAL_CFLAGS += -Wno-psabi
 endif
 
-include $(BUILD_SHARED_LIBRARY)
+include $(MTK_SHARED_LIBRARY)

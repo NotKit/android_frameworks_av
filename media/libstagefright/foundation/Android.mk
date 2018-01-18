@@ -24,7 +24,8 @@ LOCAL_SRC_FILES:=                 \
     hexdump.cpp
 
 LOCAL_C_INCLUDES:= \
-    frameworks/av/include/media/stagefright/foundation
+    frameworks/av/include/media/stagefright/foundation \
+    frameworks/av/media/libstagefright/wifi-display/uibc \
 
 LOCAL_SHARED_LIBRARIES := \
         libbinder         \
@@ -41,4 +42,4 @@ LOCAL_MODULE:= libstagefright_foundation
 
 
 
-include $(BUILD_SHARED_LIBRARY)
+include $(MTK_SHARED_LIBRARY)

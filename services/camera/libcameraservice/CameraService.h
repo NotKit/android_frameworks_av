@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -90,6 +95,18 @@ public:
     // Implementation of BinderService<T>
     static char const* getServiceName() { return "media.camera"; }
 
+//!++
+#if 1   // defined(MTK_CAMERA_BSP_SUPPORT)
+    virtual binder::Status    getProperty(
+            const String16& key,
+            /*out*/
+            String16* value);
+    virtual binder::Status    setProperty(const String16& key,
+                                          const String16& value);
+    //
+    virtual binder::Status    getExternalDeviceListener(/*out*/sp<IBinder>* listener);
+#endif
+//!--
                         CameraService();
     virtual             ~CameraService();
 
@@ -168,6 +185,12 @@ public:
     };
 
     void                loadSound();
+    //!++
+    void                loadSoundImp();
+    bool                waitloadSoundDone();
+    static void*        loadSoundThread(void* arg);
+    pthread_t           mloadSoundTThreadHandle;
+    //!--
     void                playSound(sound_kind kind);
     void                releaseSound();
 

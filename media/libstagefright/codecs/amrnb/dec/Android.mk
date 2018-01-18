@@ -86,7 +86,7 @@ LOCAL_SHARED_LIBRARIES := \
 LOCAL_MODULE := libstagefright_soft_amrdec
 LOCAL_MODULE_TAGS := optional
 
-include $(BUILD_SHARED_LIBRARY)
+include $(MTK_SHARED_LIBRARY)
 
 ################################################################################
 include $(CLEAR_VARS)

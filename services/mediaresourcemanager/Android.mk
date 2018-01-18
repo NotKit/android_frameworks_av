@@ -16,6 +16,6 @@ LOCAL_C_INCLUDES += \
 LOCAL_CFLAGS += -Werror -Wall
 LOCAL_CLANG := true
 
-include $(BUILD_SHARED_LIBRARY)
+include $(MTK_SHARED_LIBRARY)
 
 include $(call all-makefiles-under,$(LOCAL_PATH))

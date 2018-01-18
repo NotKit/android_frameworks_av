@@ -87,8 +87,6 @@ protected:
     // encoding of the frame
     virtual void onQueueFilled(OMX_U32 portIndex);
 
-    virtual void onReset();
-
 private:
     enum TemporalReferences {
         // For 1 layer case: reference all (last, golden, and alt ref), but only

@@ -23,6 +23,10 @@
 #include <utils/KeyedVector.h>
 #include <system/audio.h>
 #include "AudioSourceDescriptor.h"
+// <MTK_AUDIO_ADD
+#include <utils/Mutex.h>
+#include <utils/threads.h>
+// MTK_AUDIO_ADD>
 
 namespace android {
 
@@ -83,7 +87,12 @@ public:
     bool mStrategyMutedByDevice[NUM_STRATEGIES]; // strategies muted because of incompatible
                                         // device selection. See checkDeviceMuteStrategies()
     AudioPolicyClientInterface *mClientInterface;
-
+// <MTK_AUDIO_ADD
+    Mutex   mOutputDescStreamLock[AUDIO_STREAM_CNT];
+    audio_devices_t mMutePrevDevice;
+    bool mOutputFirstActive;
+    int mMuteTid[AUDIO_STREAM_CNT];     // mute request tid
+// MTK_AUDIO_ADD>
 protected:
     audio_patch_handle_t mPatchHandle;
     audio_port_handle_t mId;

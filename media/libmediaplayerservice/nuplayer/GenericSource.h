@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,6 +29,10 @@
 #include "ATSParser.h"
 
 #include <media/mediaplayer.h>
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/stagefright/MediaExtractor.h>
+#endif
 
 namespace android {
 
@@ -111,6 +120,9 @@ private:
         size_t mIndex;
         sp<IMediaSource> mSource;
         sp<AnotherPacketSource> mPackets;
+#ifdef MTK_AOSP_ENHANCEMENT
+        bool isEOS;
+#endif
     };
 
     // Helper to monitor buffering status. The polling happens every second.
@@ -142,6 +154,12 @@ private:
         void setOffloadAudio(bool offload);
         // Update media time of last dequeued buffer which is sent to the decoder.
         void updateDequeuedBufferTime(int64_t mediaUs);
+#ifdef MTK_AOSP_ENHANCEMENT
+        // dequeueAccessUnit() call it to check buffering status more soon
+        void onPollBuffering();
+        bool isBuffering();
+        bool getOffloadAudio(){return mOffloadAudio;}
+#endif
 
     protected:
         virtual ~BufferingMonitor();
@@ -173,6 +191,10 @@ private:
         int64_t mFirstDequeuedBufferRealUs;
         int64_t mFirstDequeuedBufferMediaUs;
         int64_t mlastDequeuedBufferMediaUs;
+#ifdef MTK_AOSP_ENHANCEMENT
+        int mLastNotifyPercent;
+        bool mCacheErrorNotify;
+#endif
 
         void prepare_l(const sp<NuCachedSource2> &cachedSource,
                 const sp<WVMExtractor> &wvmExtractor,
@@ -186,7 +208,11 @@ private:
         void sendCacheStats_l();
         void ensureCacheIsFetching_l();
         int64_t getLastReadPosition_l();
+#ifdef MTK_AOSP_ENHANCEMENT
+        void onPollBuffering_l(bool shouldNotify = true);
+#else
         void onPollBuffering_l();
+#endif
         void schedulePollBuffering_l();
     };
 
@@ -290,6 +316,67 @@ private:
             bool seeking, bool formatChange, media_track_type trackType, Track *track);
 
     DISALLOW_EVIL_CONSTRUCTORS(GenericSource);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    bool mIsCurrentComplete;   // OMA DRM v1 implementation
+    String8 mDrmProcName;
+    void setDRMClientInfo(const Parcel *request);
+    virtual status_t initCheck() const;
+    virtual status_t getFinalStatus() const;
+    virtual bool hasVideo();
+    virtual void setParams(const sp<MetaData>& meta);
+private:
+    void onPollBuffering2();
+    void notifySeekDone(status_t err);
+    bool getCachedDuration(int64_t *durationUs, bool *eos);
+    bool getBitrate(int64_t *bitrate);
+
+    typedef void (*callback_t)(void *observer, int64_t durationUs);
+    static void updateAudioDuration(void *observer, int64_t durationUs);
+    void notifyDurationUpdate(int64_t duration);
+    status_t initFromDataSource_checkLocalSdp(const sp<IMediaExtractor> extractor);
+    bool isTS();
+    bool isASF();
+    void  BufferingDataForTsVideo(media_track_type trackType, bool shouldBuffering);
+    status_t checkNetWorkErrorIfNeed();
+    void notifySizeForHttp();
+    void consumeRightIfNeed();
+    void resetCacheHttp();
+    void addMetaKeyIfNeed(void *format);
+    void changeMaxBuffersInNeed(size_t *maxBuffers);
+    void handleReadEOS(bool seeking, Track *track);
+    void init();
+    void checkDrmStatus2(const sp<DataSource>& dataSource);
+    void consumeRight2();
+    void addMetaKeyMbIfNeed(
+            MediaBuffer* mb,
+            media_track_type trackType,
+            int64_t seekTimeUs,
+            int64_t timeUs,
+            sp<AMessage> meta);
+    sp<MetaData> addMetaKeySdp() const;
+    sp<MetaData> getFormatMetaForHttp(bool audio);
+    status_t checkCachedIfNecessary();
+    String8 mRtspUri;
+    // sp<ASessionDescription> mSessionDesc;
+    sp<RefBase> mSessionDesc;
+    status_t mInitCheck;
+    int64_t mSeekTimeUs;
+    sp<MetaData> mSDPFormatMeta;          // for sdp local file getFormatMeta -add by Jiapeng Yin
+    int mFDforSniff;
+    bool mIsRequiresSecureBuffer;
+    bool mAudioCanChangeMaxBuffer;
+    int mSeekingCount;
+    mutable Mutex mSeekingLock;
+    int mIsMtkMusic;
+
+    bool mIs3gppSource;
+    int64_t mFirstAudioSampleOffset;  // only for mpeg4
+    int64_t mFirstVideoSampleOffset;  // only for mpeg4
+
+    bool mIsPlayReady;
+    mutable Mutex mSourceLock;  // add for ts, ALPS03065445
+#endif
 };
 
 }  // namespace android

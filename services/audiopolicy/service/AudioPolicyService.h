@@ -36,6 +36,10 @@
 #endif
 #include "AudioPolicyEffects.h"
 #include "managerdefault/AudioPolicyManager.h"
+//<MTK_AUDIO_ADD
+#include <AudioHeadsetDetect.h>
+#include <hardware/audio_policy_mtk.h>
+//MTK_AUDIO_ADD>
 
 
 namespace android {
@@ -235,6 +239,28 @@ public:
             void doOnRecordingConfigurationUpdate(int event, audio_session_t session,
                     audio_source_t source, const audio_config_base_t *clientConfig,
                     const audio_config_base_t *deviceConfig, audio_patch_handle_t patchHandle);
+     //<MTK_AUDIO_ADD
+     virtual status_t SetPolicyManagerParameters(int par1, int par2, int par3, int par4);
+     virtual status_t StartOutputSamplerate(audio_io_handle_t output,
+                                  audio_stream_type_t stream,
+                                  audio_session_t session, int samplerate);
+     virtual status_t StopOutputSamplerate(audio_io_handle_t output,
+                                         audio_stream_type_t stream,
+                                         audio_session_t session,
+                                         int samplerate);
+     virtual status_t SampleRateRequestFocus(audio_io_handle_t output,
+                                  audio_stream_type_t stream,
+                                  int *samplerate);
+     virtual status_t SampleRateUnrequestFocus(audio_io_handle_t output,
+                                  audio_stream_type_t stream,
+                                  int samplerate);
+
+     virtual status_t doStopOutputSamplerate(audio_io_handle_t output,
+                                       audio_stream_type_t stream,
+                                       audio_session_t session,
+                                       int samplerate);
+    virtual status_t getCustomAudioVolume(void* pCustomVol);
+     //MTK_AUDIO_ADD>
 
 private:
                         AudioPolicyService() ANDROID_API;
@@ -267,7 +293,11 @@ private:
             UPDATE_AUDIOPATCH_LIST,
             SET_AUDIOPORT_CONFIG,
             DYN_POLICY_MIX_STATE_UPDATE,
-            RECORDING_CONFIGURATION_UPDATE
+            RECORDING_CONFIGURATION_UPDATE,
+//<MTK_AUDIO_ADD
+            GET_CUSTOM_AUDIO_VOLUME,
+            STOP_OUTPUT_SAMPLERATE,
+//MTK_AUDIO_ADD>
         };
 
         AudioCommandThread (String8 name, const wp<AudioPolicyService>& service);
@@ -313,6 +343,13 @@ private:
                                                         const audio_config_base_t *deviceConfig,
                                                         audio_patch_handle_t patchHandle);
                     void        insertCommand_l(AudioCommand *command, int delayMs = 0);
+//<MTK_AUDIO_ADD
+                    status_t    getCustomAudioVolumeCommand(void* pCustomVol);
+                    void        stopOutputSamplerateCommand(audio_io_handle_t output,
+                                                  audio_stream_type_t stream,
+                                                  audio_session_t session,
+                                                  int samplerate);
+//MTK_AUDIO_ADD>
 
     private:
         class AudioCommandData;
@@ -323,6 +360,10 @@ private:
         public:
             AudioCommand()
             : mCommand(-1), mStatus(NO_ERROR), mWaitStatus(false) {}
+//<MTK_AUDIO_ADD
+            //more safe for polymorphism
+            virtual ~AudioCommand() {}
+//MTK_AUDIO_ADD>
 
             void dump(char* buffer, size_t size);
 
@@ -411,6 +452,25 @@ private:
             struct audio_config_base mDeviceConfig;
             audio_patch_handle_t mPatchHandle;
         };
+
+//<MTK_AUDIO_ADD
+        class GetCustomAudioVolumeData : public AudioCommandData {
+        public:
+            AUDIO_CUSTOM_VOLUME_STRUCT mVolConfig;
+        };
+        class GetGainTableData : public AudioCommandData {
+        public:
+            GainTableParam mGainTable;
+        };
+        class StopOutputDataSamplerate : public AudioCommandData {
+        public:
+            audio_io_handle_t mIO;
+            audio_stream_type_t mStream;
+            audio_session_t mSession;
+            int mSamplerate;
+        };
+        Mutex   mFunLock; //ALPS00255939
+//MTK_AUDIO_ADD>
 
         Mutex   mLock;
         Condition mWaitWorkCV;
@@ -524,6 +584,8 @@ private:
                         const audio_config_base_t *deviceConfig, audio_patch_handle_t patchHandle);
 
         virtual audio_unique_id_t newAudioUniqueId(audio_unique_id_use_t use);
+        /* MTK for get custom audio volume setting */
+        virtual status_t getCustomAudioVolume(void* pCustomVol);
 
      private:
         AudioPolicyService *mAudioPolicyService;
@@ -575,7 +637,14 @@ private:
     sp<AudioCommandThread> mTonePlaybackThread;     // tone playback thread
     sp<AudioCommandThread> mOutputCommandThread;    // process stop and release output
     struct audio_policy_device *mpAudioPolicyDev;
+#if 0 // Replace it with audio_policy_mtk
     struct audio_policy *mpAudioPolicy;
+#endif
+//<MTK_AUDIO_ADD
+    struct audio_policy_mtk *mpAudioPolicy;
+    HeadsetDetect * mHeadsetDetect;
+    static void AudioEarphoneCallback(void *user, int device, bool on);
+//MTK_AUDIO_ADD>
     AudioPolicyInterface *mAudioPolicyManager;
     AudioPolicyClient *mAudioPolicyClient;
 

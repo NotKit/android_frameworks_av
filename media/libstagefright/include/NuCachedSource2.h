@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -145,6 +150,22 @@ private:
     void updateCacheParamsFromString(const char *s);
 
     DISALLOW_EVIL_CONSTRUCTORS(NuCachedSource2);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    // The following methods are supported only if the
+    // data source is HTTP-based; otherwise, ERROR_UNSUPPORTED
+    // is returned.
+    bool estimateBandwidth(int32_t *kbps);
+    int64_t getMaxCacheSize();
+    status_t getRealFinalStatus() {return mFinalStatus;};
+    off64_t getCacheOffset() {return mCacheOffset;};
+
+private:
+    bool mIsCacheMissed;     // used for approxDataRemaining_l
+    void showBW();
+    void init();
+#endif
 };
 
 }  // namespace android

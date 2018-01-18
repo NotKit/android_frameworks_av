@@ -19,6 +19,7 @@
 
 // from LOCAL_C_INCLUDES
 #include "CameraService.h"
+#include "RegisterExtensions.h"
 
 using namespace android;
 
@@ -30,6 +31,7 @@ int main(int argc __unused, char** argv __unused)
     sp<IServiceManager> sm = defaultServiceManager();
     ALOGI("ServiceManager: %p", sm.get());
     CameraService::instantiate();
+    registerExtensions();
     ProcessState::self()->startThreadPool();
     IPCThreadState::self()->joinThreadPool();
 }

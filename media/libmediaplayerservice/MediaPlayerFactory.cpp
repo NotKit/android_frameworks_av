@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2012, The Android Open Source Project
 **
@@ -33,6 +38,17 @@
 #include "TestPlayerStub.h"
 #include "nuplayer/NuPlayerDriver.h"
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <media/stagefright/DataSource.h>
+#include <media/stagefright/MediaDefs.h>
+#include <media/stagefright/MetaData.h>
+#include <media/stagefright/FileSource.h>
+#ifdef MTK_DRM_APP
+#include <drm/DrmManagerClient.h> // OMA DRM v1 implementation
+#include <drm/DrmMtkUtil.h>
+#endif
+
+#endif
 namespace android {
 
 Mutex MediaPlayerFactory::sLock;
@@ -190,7 +206,11 @@ class NuPlayerFactory : public MediaPlayerFactory::IFactory {
             if (strstr(url,"m3u8")) {
                 return kOurScore;
             }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+            //char value[PROPERTY_VALUE_MAX];
+            if (len >= 5 && !strncasecmp(".smil", &url[len - 5], 5))
+                return kOurScore;
+#endif
             if ((len >= 4 && !strcasecmp(".sdp", &url[len - 4])) || strstr(url, ".sdp?")) {
                 return kOurScore;
             }
@@ -208,6 +228,7 @@ class NuPlayerFactory : public MediaPlayerFactory::IFactory {
                                float /*curScore*/) {
         return 1.0;
     }
+
 
     virtual float scoreFactory(const sp<IMediaPlayer>& /*client*/,
                                const sp<DataSource>& /*source*/,
@@ -248,7 +269,6 @@ void MediaPlayerFactory::registerBuiltinFactories() {
 
     registerFactory_l(new NuPlayerFactory(), NU_PLAYER);
     registerFactory_l(new TestPlayerFactory(), TEST_PLAYER);
-
     sInitComplete = true;
 }
 

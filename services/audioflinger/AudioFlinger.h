@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2007, The Android Open Source Project
 **
@@ -63,7 +68,19 @@
 
 #include <media/nbaio/NBLog.h>
 #include <private/media/AudioTrackShared.h>
+#ifdef DOLBY_DAP
+#include "ds_config.h"
+#endif // DOLBY_END
 
+//<MTK_AUDIO_ADD
+#include <media/nbaio/MonoPipe.h>
+#include "AudioMTKDcRemoval.h"
+#include <hardware/audio_policy_mtk.h>
+
+extern "C" {
+#include  "MtkAudioSrc.h"
+}
+//MTK_AUDIO_ADD>
 namespace android {
 
 struct audio_track_cblk_t;
@@ -78,7 +95,7 @@ class ServerProxy;
 // ----------------------------------------------------------------------------
 
 static const nsecs_t kDefaultStandbyTimeInNsecs = seconds(3);
-
+#define MAX_GAIN 4096.0f
 
 // Max shared memory size for audio tracks and audio records per client process
 static const size_t kClientSharedHeapSizeBytes = 1024*1024;
@@ -94,6 +111,63 @@ class AudioFlinger :
     friend class BinderService<AudioFlinger>;   // for AudioFlinger()
 public:
     static const char* getServiceName() ANDROID_API { return "media.audio_flinger"; }
+
+    //<MTK_AUDIO_ADD
+    /////////////////////////////////////////////////////////////////////////
+    //    for PCMxWay Interface API ...   Stan
+    /////////////////////////////////////////////////////////////////////////
+    virtual int xWayPlay_Start(int sample_rate);
+    virtual int xWayPlay_Stop(void);
+    virtual int xWayPlay_Write(void *buffer, int size_bytes);
+    virtual int xWayPlay_GetFreeBufferCount(void);
+    virtual int xWayRec_Start(int sample_rate);
+    virtual int xWayRec_Stop(void);
+    virtual int xWayRec_Read(void *buffer, int size_bytes);
+
+    //add by Tina, set acf preview param
+    virtual status_t SetACFPreviewParameter(void *ptr, size_t len);
+    virtual status_t SetHCFPreviewParameter(void *ptr, size_t len);
+
+    //wendy, get voice unlock dl object.
+    virtual status_t ReadRefFromRing(void*buf, uint32_t datasz, void* DLtime);
+    virtual int GetVoiceUnlockULTime(void* DLtime);
+    virtual status_t SetVoiceUnlockSRC(uint outSR, uint outChannel);
+    virtual bool startVoiceUnlockDL();
+    virtual bool stopVoiceUnlockDL();
+    virtual void freeVoiceUnlockDLInstance();
+    virtual int GetVoiceUnlockDLLatency();
+    virtual bool getVoiceUnlockDLInstance();
+    virtual status_t setSurroundMode(int value);
+    virtual status_t setSurroundOnOff(int value);
+    int mDL1ONLY; // set true to forbid fast track
+
+    //<MTK_CROSSMOUNT_MULTI_CH_SUPPORT
+    int mCrossMountSpeakerRole;
+    int mCrossMountLocalPlayback;
+    //MTK_CROSSMOUNT_MULTI_CH_SUPPORT>
+
+    int32_t mBesSurroundState;
+    int32_t mBesAudenState;
+    int32_t mBesSurroundMode;
+    //#ifdef MTK_HDMI_MULTI_CHANNEL_SUPPORT
+    struct HDMI_Capability {
+        int mHDMI_ChannelCount;
+        int mHDMI_Bitwidth;
+        int mHDMI_MaxSampleRate;
+    };
+
+    HDMI_Capability* mHDMI_Capability;
+    //#endif
+    virtual status_t getHDMICapability(int* HDMI_ChannelCount, int* HDMI_Bitwidth, int* HDMI_MaxSampleRate);
+
+    size_t mDefaultPrimaryOutputCount;
+    bool mIsSpkMntOn;
+    bool mIsSpkMntSinkOn;
+    bool mIsMicMntOn;
+    bool IsSpkMount() { return mIsSpkMntOn; };
+    bool IsSpkMountSink() { return mIsSpkMntSinkOn; };
+    bool IsMicMount() { return mIsMicMntOn; };
+    //MTK_AUDIO_ADD>
 
     virtual     status_t    dump(int fd, const Vector<String16>& args);
 
@@ -708,6 +782,10 @@ private:
 
                 // list of sessions for which a valid HW A/V sync ID was retrieved from the HAL
                 DefaultKeyedVector< audio_session_t , audio_hw_sync_t >mHwAvSyncIds;
+                //<MTK_AUDIO_ADD
+                sp<EffectHandle> eff_handle;
+                //MTK_AUDIO_ADD>
+
 private:
     sp<Client>  registerPid(pid_t pid);    // always returns non-0
 
@@ -762,7 +840,11 @@ private:
 
     sp<PatchPanel> mPatchPanel;
 
-    bool        mSystemReady;
+    bool       mSystemReady;
+
+#ifdef DOLBY_DAP
+    #include "EffectDapController.h"
+#endif // DOLBY_END
 };
 
 #undef INCLUDING_FROM_AUDIOFLINGER_H

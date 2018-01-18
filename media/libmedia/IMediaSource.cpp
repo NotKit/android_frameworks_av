@@ -107,7 +107,14 @@ public:
         data.writeInterfaceToken(BpMediaSource::getInterfaceDescriptor());
         status_t ret = remote()->transact(GETFORMAT, data, &reply);
         if (ret == NO_ERROR) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            {
+                Mutex::Autolock _l(mLockFormMetaData);
+                mMetaData = MetaData::createFromParcel(reply);
+            }
+#else
             mMetaData = MetaData::createFromParcel(reply);
+#endif
             return mMetaData;
         }
         return NULL;
@@ -158,7 +165,13 @@ public:
                     mem = interface_cast<IMemory>(binder);
                     LOG_ALWAYS_FATAL_IF(mem.get() == nullptr,
                             "Received NULL IMemory for shared buffer");
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if (index != 0) {
+                        mMemoryCache.insert(index, mem);
+                    }
+#else
                     mMemoryCache.insert(index, mem);
+#endif
                 } else {
                     mem = mMemoryCache.lookup(index);
                     LOG_ALWAYS_FATAL_IF(mem.get() == nullptr,
@@ -222,6 +235,9 @@ private:
     // NuPlayer passes pointers-to-metadata around, so we use this to keep the metadata alive
     // XXX: could we use this for caching, or does metadata change on the fly?
     sp<MetaData> mMetaData;
+#ifdef MTK_AOSP_ENHANCEMENT
+    mutable Mutex mLockFormMetaData;
+#endif
 
     // Cache all IMemory objects received from MediaExtractor.
     // We gc IMemory objects that are no longer active (referenced by a MediaBuffer).
@@ -390,14 +406,26 @@ status_t BnMediaSource::onTransact(
                 }
                 if (transferBuf != nullptr) { // Using shared buffers.
                     if (!transferBuf->isObserved()) {
+#ifndef MTK_AOSP_ENHANCEMENT
                         // Transfer buffer must be part of a MediaBufferGroup.
                         ALOGV("adding shared memory buffer %p to local group", transferBuf);
                         mGroup->add_buffer(transferBuf);
                         transferBuf->add_ref(); // We have already acquired buffer.
+#endif
                     }
                     uint64_t index = mIndexCache.lookup(transferBuf->mMemory);
                     if (index == 0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                        /*
+                         * If parser use SHARED_BUFFER, but no MediaBufferGroup, then it may cause fdleak.
+                         * So, we will disable mIndexCache and mMemoryCache in this case.
+                         */
+                        if (transferBuf->isObserved()) {
+                            index = mIndexCache.insert(transferBuf->mMemory);
+                        }
+#else
                         index = mIndexCache.insert(transferBuf->mMemory);
+#endif
                         reply->writeInt32(SHARED_BUFFER);
                         reply->writeUint64(index);
                         reply->writeStrongBinder(IInterface::asBinder(transferBuf->mMemory));

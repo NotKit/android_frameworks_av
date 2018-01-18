@@ -81,7 +81,12 @@ public:
             // selection if not the speaker.
             //  - HDMI-CEC system audio mode only output: give priority to available item in order.
             if (device & AUDIO_DEVICE_OUT_SPEAKER) {
+                // MTK_CROSSMOUNT_SUPPORT ALPS02193613
+                if (device & AUDIO_DEVICE_OUT_REMOTE_SUBMIX) {
+                    device = AUDIO_DEVICE_OUT_REMOTE_SUBMIX;
+                } else {
                 device = AUDIO_DEVICE_OUT_SPEAKER;
+                }
             } else if (device & AUDIO_DEVICE_OUT_SPEAKER_SAFE) {
                 device = AUDIO_DEVICE_OUT_SPEAKER_SAFE;
             } else if (device & AUDIO_DEVICE_OUT_HDMI_ARC) {

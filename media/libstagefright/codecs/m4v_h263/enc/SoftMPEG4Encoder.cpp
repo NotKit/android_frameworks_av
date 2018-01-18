@@ -99,7 +99,6 @@ SoftMPEG4Encoder::SoftMPEG4Encoder(
 
 SoftMPEG4Encoder::~SoftMPEG4Encoder() {
     ALOGV("Destruct SoftMPEG4Encoder");
-    onReset();
     releaseEncoder();
     List<BufferInfo *> &outQueue = getPortQueue(1);
     List<BufferInfo *> &inQueue = getPortQueue(0);
@@ -202,15 +201,22 @@ OMX_ERRORTYPE SoftMPEG4Encoder::initEncoder() {
 }
 
 OMX_ERRORTYPE SoftMPEG4Encoder::releaseEncoder() {
-    if (mEncParams) {
-        delete mEncParams;
-        mEncParams = NULL;
+    if (!mStarted) {
+        return OMX_ErrorNone;
     }
 
-    if (mHandle) {
-        delete mHandle;
-        mHandle = NULL;
-    }
+    PVCleanUpVideoEncoder(mHandle);
+
+    free(mInputFrameData);
+    mInputFrameData = NULL;
+
+    delete mEncParams;
+    mEncParams = NULL;
+
+    delete mHandle;
+    mHandle = NULL;
+
+    mStarted = false;
 
     return OMX_ErrorNone;
 }
@@ -506,19 +512,6 @@ void SoftMPEG4Encoder::onQueueFilled(OMX_U32 /* portIndex */) {
         outInfo->mOwnedByUs = false;
         notifyFillBufferDone(outHeader);
     }
-}
-
-void SoftMPEG4Encoder::onReset() {
-    if (!mStarted) {
-        return;
-    }
-
-    PVCleanUpVideoEncoder(mHandle);
-
-    free(mInputFrameData);
-    mInputFrameData = NULL;
-
-    mStarted = false;
 }
 
 }  // namespace android

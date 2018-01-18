@@ -3,6 +3,12 @@ LOCAL_PATH:= $(call my-dir)
 # Multichannel downmix effect library
 include $(CLEAR_VARS)
 
+ifeq ($(strip $(BOARD_USES_MTK_AUDIO)),true)
+  ifeq ($(strip $(MTK_BESSURROUND_SUPPORT)),yes)
+    LOCAL_CFLAGS += -DMTK_AUDIO
+  endif
+endif
+
 LOCAL_SRC_FILES:= \
 	EffectDownmix.c
 
@@ -18,6 +24,9 @@ LOCAL_MODULE_RELATIVE_PATH := soundfx
 LOCAL_C_INCLUDES := \
 	$(call include-path-for, audio-effects) \
 	$(call include-path-for, audio-utils)
+
+LOCAL_C_INCLUDES+= \
+   $(TOP)/$(MTK_PATH_SOURCE)/hardware/audio/common/include
 
 LOCAL_CFLAGS += -fvisibility=hidden
 

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,10 +35,20 @@ HDCP::HDCP(bool createEncryptionModule)
     : mIsEncryptionModule(createEncryptionModule),
       mLibHandle(NULL),
       mHDCPModule(NULL) {
+#if defined(MTK_WFD_HDCP_RX_SUPPORT) || defined(MTK_WFD_HDCP_TX_SUPPORT)
+    ALOGE("hdcp config is opened");
+
+    if (createEncryptionModule)
+        mLibHandle = dlopen("libstagefright_hdcptx.so", RTLD_NOW);
+    else
+        mLibHandle = dlopen("libstagefright_hdcprx.so", RTLD_NOW);
+#else
+    ALOGE("hdcp config is not opened");
     mLibHandle = dlopen("libstagefright_hdcp.so", RTLD_NOW);
+#endif
 
     if (mLibHandle == NULL) {
-        ALOGE("Unable to locate libstagefright_hdcp.so");
+        ALOGE("Unable to locate libstagefright_hdcptx.so or libstagefright_hdcprx.so");
         return;
     }
 
@@ -107,7 +122,11 @@ uint32_t HDCP::getCaps() {
         return NO_INIT;
     }
 
+    // TO-DO:
+    // Only support HDCP_CAPS_ENCRYPT (byte-array to byte-array) for now.
+    // use mHDCPModule->getCaps() when the HDCP libraries get updated.
     return mHDCPModule->getCaps();
+    //return HDCPModule::HDCP_CAPS_ENCRYPT;
 }
 
 status_t HDCP::encrypt(

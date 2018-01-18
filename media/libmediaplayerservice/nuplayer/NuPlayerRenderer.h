@@ -34,6 +34,9 @@ struct NuPlayer::Renderer : public AHandler {
     enum Flags {
         FLAG_REAL_TIME = 1,
         FLAG_OFFLOAD_AUDIO = 2,
+#ifdef MTK_AOSP_ENHANCEMENT
+        FLAG_HAS_VIDEO_AUDIO = 4,
+#endif
     };
     Renderer(const sp<MediaPlayerBase::AudioSink> &sink,
              const sp<AMessage> &notify,
@@ -89,6 +92,9 @@ struct NuPlayer::Renderer : public AHandler {
         kWhatMediaRenderingStart      = 'mdrd',
         kWhatAudioTearDown            = 'adTD',
         kWhatAudioOffloadPauseTimeout = 'aOPT',
+#ifdef MTK_AOSP_ENHANCEMENT
+        kWhatRetryAudioOffload        = 'rtOf',
+#endif
     };
 
     enum AudioTearDownReason {
@@ -278,6 +284,59 @@ private:
     int64_t getDurationUsIfPlayedAtSampleRate(uint32_t numFrames);
 
     DISALLOW_EVIL_CONSTRUCTORS(Renderer);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    status_t setsmspeed(int32_t speed);
+    void setFlags(uint32_t flag, bool setting);
+    void setLateVideoToDisplay(bool display);
+    void notifyBufferingStart();
+    void notifyBufferingEnd();
+    void setUseSyncQueues(bool use);
+    void setUseFlushAudioSyncQueues(bool use);
+    void signalRetryOffload(); //for offload
+private:
+    int64_t mBufferingStartTimeRealUs;
+    int64_t mSMSynctime;
+    int32_t mSMSpeed;
+    int32_t mPreSMSpeed;
+//  int32_t mPauseSpeed;
+    bool mNeedSync;
+//  void handleRenderBufferForSlowMotion(QueueEntry *processBufferEntry);
+    bool mNeedNewAudioAnchorTime;
+    bool mPausing;
+    bool mMJCPauseDelay;
+    bool mLateVideoToDisplay;
+
+    int32_t mIsMP3orAPE;//mp3 and ape low power
+
+    bool mAudioEOS;
+    bool mAudioFlushed;
+    bool mUseSyncQueues;
+    bool mUseFlushAudioSyncQueues;
+
+    bool mRetryOffload;//for offload
+    int64_t mPausedTimeUsOffload;//for offload
+    bool mPausedWithAudio;          // for audioSink pause for offload
+    void init_ext();
+    void dumpQueue(List<QueueEntry> *queue, bool audio = true);
+    static void dumpProfile(const char* tag, int64_t timeUs);
+    static void dumpBuffer(const char* fileName, char* p, size_t size);
+    uint32_t  getNumFramesPlayedByAudioTrackCenter();
+    int64_t getAudioPendingPlayoutUsByAudioTrackCenter();
+    int64_t getPlayedOutAudioDurationUsByAudioTrackCenter();
+    bool handleRenderBufferLateInfo(bool tooLate,int64_t realTimeUs,QueueEntry *processBufferEntry);
+    void handleForClearMotionPause(bool tooLate,QueueEntry *processBufferEntry);
+    bool isSyncQueues();
+    bool audioFormatChange(const sp<AMessage> format);
+    bool onPauseForClearMotion(const sp<AMessage>&msg);
+    static void readProperties();
+    void dumpAudioVideoQueue();
+    void notifyRetryAudioOffload();//for offload
+    void onRetryAudioOffload();//for offload
+    uint32_t mLastFrameAt;  // for start & seek not smooth
+    int64_t mPadding;  // for start & seek not smooth
+#endif
+
 };
 
 } // namespace android

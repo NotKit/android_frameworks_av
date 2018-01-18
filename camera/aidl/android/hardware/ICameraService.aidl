@@ -144,4 +144,14 @@ interface ICameraService
     const int EVENT_NONE = 0;
     const int EVENT_USER_SWITCHED = 1;
     oneway void notifySystemEvent(int eventId, in int[] args);
+
+//!++
+    /**
+     * Set/get property.
+     */
+    String getProperty(String key);
+    void setProperty(String key, String value);
+    IBinder getExternalDeviceListener();
+//!--
+
 }

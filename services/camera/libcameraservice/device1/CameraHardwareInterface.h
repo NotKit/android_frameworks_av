@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,11 +43,16 @@ typedef void (*data_callback)(int32_t msgType,
                             const sp<IMemory> &dataPtr,
                             camera_frame_metadata_t *metadata,
                             void* user);
-
 typedef void (*data_callback_timestamp)(nsecs_t timestamp,
                             int32_t msgType,
                             const sp<IMemory> &dataPtr,
                             void *user);
+//!++
+typedef void (*mtk_metadata_callback)(int32_t msg_type,
+                            camera_metadata_t *result,
+                            camera_metadata_t *charateristic,
+                            void *user);
+//!--
 
 /**
  * CameraHardwareInterface.h defines the interface to the
@@ -129,6 +139,14 @@ public:
     {
         ALOGV("%s(%s) buf %p", __FUNCTION__, mName.string(), buf.get());
         if (mDevice->ops->set_preview_window) {
+            //!++
+            if  ( buf == 0 ) {
+                ALOGD("set_preview_window(0) before mPreviewWindow = 0 \r\n");
+                mDevice->ops->set_preview_window(mDevice, 0);
+                mPreviewWindow = 0;
+                return  OK;
+            }
+            //!--
             mPreviewWindow = buf;
             if (buf != nullptr) {
                 if (mPreviewScalingMode != NOT_SET) {
@@ -797,6 +815,28 @@ private:
     int mPreviewUsage;
     int mPreviewSwapInterval;
     android_native_rect_t mPreviewCrop;
+//!++
+private:
+    mtk_metadata_callback   mMetadataCb;
+
+    static void __mtk_metadata_cb(
+                          int32_t msg_type,
+                          camera_metadata_t *result,
+                          camera_metadata_t *charateristic,
+                          void *user)
+    {
+        ALOGV("%s", __FUNCTION__);
+        CameraHardwareInterface *__this =
+                static_cast<CameraHardwareInterface *>(user);
+        __this->mMetadataCb(msg_type, result, charateristic, __this->mCbUser);
+    }
+
+public:
+    /** Set the metadata callbacks */
+    void setMtkCallbacks(
+            mtk_metadata_callback metadata_cb,
+            void* user);
+//!--
 };
 
 };  // namespace android

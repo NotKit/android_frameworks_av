@@ -6,7 +6,7 @@ LOCAL_SRC_FILES := register.cpp
 LOCAL_MODULE := libregistermsext
 LOCAL_MODULE_TAGS := optional
 LOCAL_CFLAGS := -Werror -Wall
-include $(BUILD_STATIC_LIBRARY)
+include $(MTK_STATIC_LIBRARY)
 endif
 
 include $(CLEAR_VARS)
@@ -23,14 +23,18 @@ LOCAL_SHARED_LIBRARIES := \
 	libmedia \
 	libmediaplayerservice \
 	libutils \
+	libdl \
 	libbinder \
 	libicuuc \
+
 
 LOCAL_STATIC_LIBRARIES := \
         libicuandroid_utils \
         libregistermsext
 
-LOCAL_C_INCLUDES := \
+LOCAL_C_INCLUDES += \
+    $(TOP)/$(MTK_PATH_SOURCE)/frameworks/av/include \
+    $(TOP)/$(MTK_PATH_SOURCE)/frameworks/av \
     frameworks/av/media/libmediaplayerservice \
     frameworks/av/services/camera/libcameraservice \
     frameworks/av/services/mediaresourcemanager \
@@ -42,4 +46,4 @@ LOCAL_INIT_RC := mediaserver.rc
 
 LOCAL_CFLAGS := -Werror -Wall
 
-include $(BUILD_EXECUTABLE)
+include $(MTK_EXECUTABLE)

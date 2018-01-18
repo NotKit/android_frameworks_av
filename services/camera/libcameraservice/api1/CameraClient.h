@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +28,7 @@ namespace android {
 
 class MemoryHeapBase;
 class CameraHardwareInterface;
+class IMetadataCallbacks;
 
 /**
  * Interface between android.hardware.Camera API and Camera HAL device for version
@@ -138,6 +144,11 @@ private:
 
     // Ensures atomicity among the public methods
     mutable Mutex                   mLock;
+    //!++
+    #ifndef MTK_CAM_FRAMEWORK_DEFAULT_CODE
+    mutable Mutex                   mRemoteCallbackLock;
+    #endif
+    //!--
     // This is a binder of Surface or Surface.
     sp<IBinder>                     mSurface;
     sp<ANativeWindow>               mPreviewWindow;
@@ -172,6 +183,41 @@ private:
     // This function keeps trying to grab mLock, or give up if the message
     // is found to be disabled. It returns true if mLock is grabbed.
     bool                    lockIfMessageWanted(int32_t msgType);
+
+//!++
+    sp<IMetadataCallbacks>  mMetadataCallback;
+    static void             mtkMetadataCallback(int32_t msgType,
+                                        camera_metadata_t *result,
+                                        camera_metadata_t *charateristic,
+                                        void* user);
+//#ifdef  MTK_CAMERA_BSP_SUPPORT
+private:
+    mutable Mutex                   mMetaLock;
+
+        //
+        void                handleMtkExtNotify(int32_t ext1, int32_t ext2);
+        void                handleMtkExtData(const sp<IMemory>& dataPtr, camera_frame_metadata_t *metadata);
+        //
+        void                handleMtkExtBurstShutter(int32_t ext1, int32_t ext2);
+        void                handleMtkExtDataBurstShot(const sp<IMemory>& dataPtr, camera_frame_metadata_t *metadata);
+        //
+        void                handleMtkExtContinuousShutter(int32_t ext1, int32_t ext2);
+        void                handleMtkExtDataContinuousShot(const sp<IMemory>& dataPtr, camera_frame_metadata_t *metadata);
+        void                handleMtkExtContinuousEnd(int32_t ext1, int32_t ext2);
+        //
+        void                handleMtkExtCaptureDone(int32_t ext1, int32_t ext2);
+        void                handleMtkExtShutter(int32_t ext1, int32_t ext2);
+        void                handleMtkExtDataCompressedImage(const sp<IMemory>& dataPtr, camera_frame_metadata_t *metadata);
+        //
+        void                handleMtkExtDataRaw16(const sp<IMemory>& dataPtr, camera_frame_metadata_t *metadata);
+        //
+        void                playRecordingSound(CameraService::sound_kind kind);
+        //
+public:
+        virtual status_t    setMetadataCallback(sp<IMetadataCallbacks>& cb);
+        void                onMetadataAvailable(camera_metadata_t *result, camera_metadata_t *charateristic);
+//#endif
+//!--
 };
 
 }

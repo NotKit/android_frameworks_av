@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -42,8 +47,6 @@ protected:
 
     virtual void onQueueFilled(OMX_U32 portIndex);
 
-    virtual void onReset();
-
 private:
     enum {
         kNumBuffers             = 4,
@@ -68,6 +71,10 @@ private:
     bool mSawInputEOS;
 
     bool mSignalledError;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool mEOSHaveNoData;
+#endif
 
     void initPorts();
     status_t initEncoder();

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +22,9 @@
 #include "TextDescriptions.h"
 #include <media/stagefright/Utils.h>
 #include <media/stagefright/MediaErrors.h>
-
+#ifndef UNUSED
+#define UNUSED(a) (void)&a
+#endif
 namespace android {
 
 TextDescriptions::TextDescriptions() {
@@ -39,7 +46,6 @@ status_t TextDescriptions::getParcelOfDescriptions(
             return extractSRTLocalDescriptions(data, size, timeMs, parcel);
         }
     }
-
     return ERROR_UNSUPPORTED;
 }
 

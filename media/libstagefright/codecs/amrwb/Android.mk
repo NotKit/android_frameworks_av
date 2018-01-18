@@ -52,7 +52,7 @@ LOCAL_CFLAGS := \
 
 LOCAL_CFLAGS += -Werror
 LOCAL_CLANG := true
-LOCAL_SANITIZE := signed-integer-overflow
+#LOCAL_SANITIZE := signed-integer-overflow
 
 LOCAL_MODULE := libstagefright_amrwbdec
 

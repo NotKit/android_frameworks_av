@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2012 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -80,6 +85,15 @@ SoftAAC2::SoftAAC2(
       mOutputPortSettingsChange(NONE) {
     initPorts();
     CHECK_EQ(initDecoder(), (status_t)OK);
+#ifdef MTK_AOSP_ENHANCEMENT
+    mIsErrorCsdHandled = false;
+    char value[PROPERTY_VALUE_MAX];
+    if (property_get("aac.decoder.dump", value, NULL)) {
+        mDecoderDump = atoi(value);
+    } else {
+        mDecoderDump = 0;
+    }
+#endif
 }
 
 SoftAAC2::~SoftAAC2() {
@@ -93,8 +107,13 @@ void SoftAAC2::initPorts() {
 
     def.nPortIndex = 0;
     def.eDir = OMX_DirInput;
+#ifdef MTK_AOSP_ENHANCEMENT
+    def.nBufferCountMin = 1;
+    def.nBufferCountActual = kNumInputBuffers;
+#else
     def.nBufferCountMin = kNumInputBuffers;
     def.nBufferCountActual = def.nBufferCountMin;
+#endif
     def.nBufferSize = 8192;
     def.bEnabled = OMX_TRUE;
     def.bPopulated = OMX_FALSE;
@@ -138,11 +157,21 @@ status_t SoftAAC2::initDecoder() {
             status = OK;
         }
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (AAC_DEC_OK != aacDecoder_GetFreeBytes(mAACDecoder, &mDecoderInternelBufferSize))
+    {
+        mDecoderInternelBufferSize = 8192;
+    }
+    mIsRawAac = false;
+#endif
 
     mEndOfInput = false;
     mEndOfOutput = false;
     mOutputDelayCompensated = 0;
     mOutputDelayRingBufferSize = 2048 * MAX_CHANNEL_COUNT * kNumDelayBlocksMax;
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGI("RingBufferSize = %d", mOutputDelayRingBufferSize);
+#endif
     mOutputDelayRingBuffer = new short[mOutputDelayRingBufferSize];
     mOutputDelayRingBufferWritePos = 0;
     mOutputDelayRingBufferReadPos = 0;
@@ -239,7 +268,13 @@ OMX_ERRORTYPE SoftAAC2::internalGetParameter(
             aacParams->eAACStreamFormat =
                 mIsADTS
                     ? OMX_AUDIO_AACStreamFormatMP4ADTS
+#ifdef MTK_AOSP_ENHANCEMENT
+                    : (mIsRawAac
+                        ? OMX_AUDIO_AACStreamFormatRAW
+                        : OMX_AUDIO_AACStreamFormatMP4FF);
+#else
                     : OMX_AUDIO_AACStreamFormatMP4FF;
+#endif
 
             aacParams->eChannelMode = OMX_AUDIO_ChannelModeStereo;
 
@@ -359,6 +394,12 @@ OMX_ERRORTYPE SoftAAC2::internalSetParameter(
             } else if (aacParams->eAACStreamFormat
                         == OMX_AUDIO_AACStreamFormatMP4ADTS) {
                 mIsADTS = true;
+#ifdef MTK_AOSP_ENHANCEMENT
+            } else if (aacParams->eAACStreamFormat
+                        == OMX_AUDIO_AACStreamFormatRAW) {
+                mIsADTS = false;
+                mIsRawAac = true;
+#endif
             } else {
                 return OMX_ErrorUndefined;
             }
@@ -534,13 +575,15 @@ int32_t SoftAAC2::outputDelayRingBufferGetSamples(INT_PCM *samples, int32_t numS
 }
 
 int32_t SoftAAC2::outputDelayRingBufferSamplesAvailable() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGV("mOutputDelayRingBufferFilled = %d", mOutputDelayRingBufferFilled);
+#endif
     return mOutputDelayRingBufferFilled;
 }
 
 int32_t SoftAAC2::outputDelayRingBufferSpaceLeft() {
     return mOutputDelayRingBufferSize - outputDelayRingBufferSamplesAvailable();
 }
-
 
 void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
     if (mSignalledError || mOutputPortSettingsChange != NONE) {
@@ -554,6 +597,10 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
     List<BufferInfo *> &inQueue = getPortQueue(0);
     List<BufferInfo *> &outQueue = getPortQueue(1);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool nDecodingNotEnoughBits = false;
+#endif
+
     while ((!inQueue.empty() || mEndOfInput) && !outQueue.empty()) {
         if (!inQueue.empty()) {
             INT_PCM tmpOutBuffer[2048 * MAX_CHANNEL_COUNT];
@@ -561,6 +608,9 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
             OMX_BUFFERHEADERTYPE *inHeader = inInfo->mHeader;
 
             mEndOfInput = (inHeader->nFlags & OMX_BUFFERFLAG_EOS) != 0;
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (mEndOfInput) ALOGI("input eos, length=%d", inHeader->nFilledLen);
+#endif
 
             if (mInputBufferCount == 0 && !(inHeader->nFlags & OMX_BUFFERFLAG_CODECCONFIG)) {
                 ALOGE("first buffer should have OMX_BUFFERFLAG_CODECCONFIG set");
@@ -572,6 +622,19 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
 
                 inBuffer[0] = inHeader->pBuffer + inHeader->nOffset;
                 inBufferLength[0] = inHeader->nFilledLen;
+#ifdef MTK_AOSP_ENHANCEMENT
+                hexdump(inBuffer[0], inBufferLength[0]);
+                mAACConfigSpecificData[0] = 0;
+                mAACConfigSpecificData[1] = 0;
+                mIsErrorCsdHandled = false;
+                if (inBufferLength[0] == 2) {
+                    mAACConfigSpecificData[0] = *(UCHAR *)(inBuffer[0] + 0);
+                    mAACConfigSpecificData[1] = *(UCHAR *)(inBuffer[0] + 1);
+                } else {
+                    mIsErrorCsdHandled = true;
+                }
+                mEndOfOutput = false;
+#endif
 
                 AAC_DECODER_ERROR decoderErr =
                     aacDecoder_ConfigRaw(mAACDecoder,
@@ -580,6 +643,7 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
 
                 if (decoderErr != AAC_DEC_OK) {
                     ALOGW("aacDecoder_ConfigRaw decoderErr = 0x%4.4x", decoderErr);
+                    usleep(5*1000);
                     mSignalledError = true;
                     notify(OMX_EventError, OMX_ErrorUndefined, decoderErr, NULL);
                     return;
@@ -608,16 +672,35 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
                 return;
             }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (inHeader->nFilledLen == 0 && (getBytesInDecoder() == 0 || nDecodingNotEnoughBits)) {
+#else
             if (inHeader->nFilledLen == 0) {
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (mEndOfInput && mLastInHeader != inHeader) {
+                    mBufferTimestamps.add(inHeader->nTimeStamp);
+                }
+#endif
                 inInfo->mOwnedByUs = false;
                 inQueue.erase(inQueue.begin());
                 mLastInHeader = NULL;
                 inInfo = NULL;
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGI("EBD: inHeader->nFilledLen == 0");
+#endif
                 notifyEmptyBufferDone(inHeader);
                 inHeader = NULL;
                 continue;
             }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (mIsADTS && inHeader->nFilledLen == 0 && getBytesInDecoder() != 0) {
+                ALOGI("the current adts frame has not decoded complete");
+                // skip to fill decoder, just aacDecoder_DecoderFrame() again.
+                inBufferLength[0] = 0;
+            } else
+#endif
             if (mIsADTS) {
                 size_t adtsHeaderSize = 0;
                 // skip 30 bits, aac_frame_length follows.
@@ -668,6 +751,9 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
 
                 // insert buffer size and time stamp
                 mBufferSizes.add(inBufferLength[0]);
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGV("input length=%u", inBufferLength[0]);
+#endif
                 if (mLastInHeader != inHeader) {
                     mBufferTimestamps.add(inHeader->nTimeStamp);
                     mLastInHeader = inHeader;
@@ -680,11 +766,50 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
             } else {
                 inBuffer[0] = inHeader->pBuffer + inHeader->nOffset;
                 inBufferLength[0] = inHeader->nFilledLen;
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (mLastInHeader != inHeader)
+                {
+                    mLastInHeader = inHeader;
+                    mBufferTimestamps.add(inHeader->nTimeStamp);
+                    mBufferSizes.add(inHeader->nFilledLen);
+                }
+#else
                 mLastInHeader = inHeader;
                 mBufferTimestamps.add(inHeader->nTimeStamp);
                 mBufferSizes.add(inHeader->nFilledLen);
+#endif
             }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            INT prevSampleRate = mStreamInfo->sampleRate;
+            INT prevNumChannels = mStreamInfo->numChannels;
+
+            if (inBufferLength[0] > 0) {
+                // Fill and decode
+                bytesValid[0] = inBufferLength[0];
+#ifdef MTK_AOSP_ENHANCEMENT
+                dumpDecoderIn(inBuffer[0], inBufferLength[0]);
+#endif
+                ALOGV("[aacDecoder_Fill] %d", inBufferLength[0]);
+
+                aacDecoder_Fill(mAACDecoder,
+                                inBuffer,
+                                inBufferLength,
+                                bytesValid);
+
+                // run DRC check
+                mDrcWrap.submitStreamData(mStreamInfo);
+                mDrcWrap.update();
+
+                UINT inBufferUsedLength = inBufferLength[0] - bytesValid[0];
+                inHeader->nFilledLen -= inBufferUsedLength;
+                inHeader->nOffset += inBufferUsedLength;
+                ALOGV("aacDecoder_Fill length=%u", inBufferUsedLength);
+
+                bytesValid[0] = 0;
+                inBufferLength[0] = inBufferUsedLength;
+            }
+#else
             // Fill and decode
             bytesValid[0] = inBufferLength[0];
 
@@ -703,15 +828,22 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
             UINT inBufferUsedLength = inBufferLength[0] - bytesValid[0];
             inHeader->nFilledLen -= inBufferUsedLength;
             inHeader->nOffset += inBufferUsedLength;
+#endif
 
             AAC_DECODER_ERROR decoderErr;
             int numLoops = 0;
             do {
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGV("+do-while starting decode");
+#endif
                 if (outputDelayRingBufferSpaceLeft() <
                         (mStreamInfo->frameSize * mStreamInfo->numChannels)) {
-                    ALOGV("skipping decode: not enough space left in ringbuffer");
+                    ALOGI("skipping decode: not enough space left in ringbuffer");
                     break;
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+                nDecodingNotEnoughBits = false;
+#endif
 
                 int numConsumed = mStreamInfo->numTotalBytes;
                 decoderErr = aacDecoder_DecodeFrame(mAACDecoder,
@@ -719,14 +851,28 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
                                            2048 * MAX_CHANNEL_COUNT,
                                            0 /* flags */);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                int32_t bytesPerChannel = mStreamInfo->frameSize * sizeof(int16_t);
+                for (int i = 0; i < mStreamInfo->numChannels; i++) {
+                    // dump decoder data by channel
+                    dumpDecoderOut(tmpOutBuffer + mStreamInfo->frameSize * i, bytesPerChannel, i);
+                }
+#endif
                 numConsumed = mStreamInfo->numTotalBytes - numConsumed;
                 numLoops++;
 
                 if (decoderErr == AAC_DEC_NOT_ENOUGH_BITS) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    nDecodingNotEnoughBits = true;
+                    ALOGI("skipping decode: AAC_DEC_NOT_ENOUGH_BITS");
+#endif
                     break;
                 }
                 mDecodedSizes.add(numConsumed);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGV("decoded length=%d", numConsumed);
+#endif
                 if (decoderErr != AAC_DEC_OK) {
                     ALOGW("aacDecoder_DecodeFrame decoderErr = 0x%4.4x", decoderErr);
                 }
@@ -749,6 +895,9 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
                         return;
                     }
                 } else {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    handleAviWithRawAAC();
+#endif
                     ALOGW("AAC decoder returned error 0x%4.4x, substituting silence", decoderErr);
 
                     memset(tmpOutBuffer, 0, numOutBytes); // TODO: check for overflow
@@ -809,18 +958,30 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
                     notify(OMX_EventPortSettingsChanged, 1, 0, NULL);
                     mOutputPortSettingsChange = AWAITING_DISABLED;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if (inHeader && inHeader->nFilledLen == 0 &&
+                            (getBytesInDecoder() == 0 || nDecodingNotEnoughBits)) {
+#else
                     if (inHeader && inHeader->nFilledLen == 0) {
+#endif
                         inInfo->mOwnedByUs = false;
                         mInputBufferCount++;
                         inQueue.erase(inQueue.begin());
                         mLastInHeader = NULL;
                         inInfo = NULL;
                         notifyEmptyBufferDone(inHeader);
+                        ALOGV("EBD when nFilledLen=0 & getBytesInDecoder()==0");
                         inHeader = NULL;
                     }
                     return;
                 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (inHeader && inHeader->nFilledLen == 0 &&
+                    (getBytesInDecoder() == 0 || nDecodingNotEnoughBits)) {
+#else
                 if (inHeader && inHeader->nFilledLen == 0) {
+#endif
                     inInfo->mOwnedByUs = false;
                     mInputBufferCount++;
                     inQueue.erase(inQueue.begin());
@@ -829,14 +990,25 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
                     notifyEmptyBufferDone(inHeader);
                     inHeader = NULL;
                 } else {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    ALOGI("inHeader->nFilledLen = %d, not EBD", inHeader ? inHeader->nFilledLen : 0);
+#else
                     ALOGV("inHeader->nFilledLen = %d", inHeader ? inHeader->nFilledLen : 0);
+#endif
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+                break;
+#endif
             } while (decoderErr == AAC_DEC_OK);
         }
 
         int32_t outputDelay = mStreamInfo->outputDelay * mStreamInfo->numChannels;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if ((!mEndOfInput || getBytesInDecoder() > 0) && mOutputDelayCompensated < outputDelay) {
+#else
         if (!mEndOfInput && mOutputDelayCompensated < outputDelay) {
+#endif
             // discard outputDelay at the beginning
             int32_t toCompensate = outputDelay - mOutputDelayCompensated;
             int32_t discard = outputDelayRingBufferSamplesAvailable();
@@ -844,6 +1016,10 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
                 discard = toCompensate;
             }
             int32_t discarded = outputDelayRingBufferGetSamples(0, discard);
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGI("discard %d samples at the beginning(outputDelay = %d, compensated = %d)",
+                  discarded, outputDelay, mOutputDelayCompensated);
+#endif
             mOutputDelayCompensated += discarded;
             continue;
         }
@@ -862,6 +1038,13 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
                                            tmpOutBuffer,
                                            2048 * MAX_CHANNEL_COUNT,
                                            AACDEC_FLUSH);
+#ifdef MTK_AOSP_ENHANCEMENT
+                int32_t bytesPerChannel = mStreamInfo->frameSize * sizeof(int16_t);
+                for (int i = 0; i < mStreamInfo->numChannels; i++) {
+                    // dump decoder data by channel
+                    dumpDecoderOut(tmpOutBuffer + mStreamInfo->frameSize * i, bytesPerChannel, i);
+                }
+#endif
                 if (decoderErr != AAC_DEC_OK) {
                     ALOGW("aacDecoder_DecodeFrame decoderErr = 0x%4.4x", decoderErr);
                 }
@@ -961,9 +1144,17 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
 
             outHeader->nFilledLen = numSamples * sizeof(int16_t);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (mEndOfInput && !outQueue.empty() && outputDelayRingBufferSamplesAvailable() == 0
+                && getBytesInDecoder() == 0) {
+#else
             if (mEndOfInput && !outQueue.empty() && outputDelayRingBufferSamplesAvailable() == 0) {
+#endif
                 outHeader->nFlags = OMX_BUFFERFLAG_EOS;
                 mEndOfOutput = true;
+#ifdef MTK_AOSP_ENHANCEMENT
+                mEndOfInput  = false;
+#endif
             } else {
                 outHeader->nFlags = 0;
             }
@@ -974,18 +1165,29 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
             outInfo->mOwnedByUs = false;
             outQueue.erase(outQueue.begin());
             outInfo = NULL;
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGV("FBD: out timestamp %lld / %d / %d", outHeader->nTimeStamp, outHeader->nFilledLen, outHeader->nFlags);
+#else
             ALOGV("out timestamp %lld / %d", outHeader->nTimeStamp, outHeader->nFilledLen);
+#endif
             notifyFillBufferDone(outHeader);
             outHeader = NULL;
         }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (mEndOfInput && getBytesInDecoder() == 0) {
+#else
         if (mEndOfInput) {
+#endif
             int ringBufAvail = outputDelayRingBufferSamplesAvailable();
             if (!outQueue.empty()
                     && ringBufAvail < mStreamInfo->frameSize * mStreamInfo->numChannels) {
                 if (!mEndOfOutput) {
                     // send partial or empty block signaling EOS
                     mEndOfOutput = true;
+#ifdef MTK_AOSP_ENHANCEMENT
+                    mEndOfInput  = false;
+#endif
                     BufferInfo *outInfo = *outQueue.begin();
                     OMX_BUFFERHEADERTYPE *outHeader = outInfo->mHeader;
 
@@ -994,6 +1196,10 @@ void SoftAAC2::onQueueFilled(OMX_U32 /* portIndex */) {
                     int32_t ns = outputDelayRingBufferGetSamples(outBuffer, ringBufAvail);
                     if (ns < 0) {
                         ns = 0;
+#ifdef MTK_AOSP_ENHANCEMENT
+                    } else if (ns > 0) {
+                        ns = mStreamInfo->frameSize * mStreamInfo->numChannels;
+#endif
                     }
                     outHeader->nFilledLen = ns;
                     outHeader->nFlags = OMX_BUFFERFLAG_EOS;
@@ -1046,6 +1252,27 @@ void SoftAAC2::onPortFlushCompleted(OMX_U32 portIndex) {
 }
 
 void SoftAAC2::drainDecoder() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    while (getBytesInDecoder() > 0) {
+        INT_PCM tmpOutBuffer[2048 * MAX_CHANNEL_COUNT];
+        mDrcWrap.submitStreamData(mStreamInfo);
+        mDrcWrap.update();
+        AAC_DECODER_ERROR decoderErr =
+            aacDecoder_DecodeFrame(mAACDecoder,
+                                   tmpOutBuffer,
+                                   2048 * MAX_CHANNEL_COUNT,
+                                   0);
+        int32_t bytesPerChannel = mStreamInfo->frameSize * sizeof(int16_t);
+        for (int i = 0; i < mStreamInfo->numChannels; i++) {
+            // dump decoder data by channel
+            dumpDecoderOut(tmpOutBuffer + mStreamInfo->frameSize * i, bytesPerChannel, i);
+        }
+        if (decoderErr != AAC_DEC_OK) {
+            ALOGW("aacDecoder_DecodeFrame decoderErr = 0x%4.4x", decoderErr);
+            break;
+        }
+    }
+#endif
     // flush decoder until outputDelay is compensated
     while (mOutputDelayCompensated > 0) {
         // a buffer big enough for MAX_CHANNEL_COUNT channels of decoded HE-AAC
@@ -1060,6 +1287,13 @@ void SoftAAC2::drainDecoder() {
                                    tmpOutBuffer,
                                    2048 * MAX_CHANNEL_COUNT,
                                    AACDEC_FLUSH);
+#ifdef MTK_AOSP_ENHANCEMENT
+        int32_t bytesPerChannel = mStreamInfo->frameSize * sizeof(int16_t);
+        for (int i = 0; i < mStreamInfo->numChannels; i++) {
+            // dump decoder data by channel
+            dumpDecoderOut(tmpOutBuffer + mStreamInfo->frameSize * i, bytesPerChannel, i);
+        }
+#endif
         if (decoderErr != AAC_DEC_OK) {
             ALOGW("aacDecoder_DecodeFrame decoderErr = 0x%4.4x", decoderErr);
         }
@@ -1075,6 +1309,7 @@ void SoftAAC2::drainDecoder() {
 }
 
 void SoftAAC2::onReset() {
+    ALOGI("onReset");
     drainDecoder();
     // reset the "configured" state
     mInputBufferCount = 0;
@@ -1124,6 +1359,91 @@ void SoftAAC2::onPortEnableCompleted(OMX_U32 portIndex, bool enabled) {
     }
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+int SoftAAC2::getBytesInDecoder() {
+    UINT freeBytesInDecoder;
+    if (AAC_DEC_OK != aacDecoder_GetFreeBytes(mAACDecoder, &freeBytesInDecoder)) {
+        freeBytesInDecoder = 8192;
+    }
+
+    if (mDecoderInternelBufferSize <= freeBytesInDecoder) {
+        return 0;
+    } else {
+        int diff = mDecoderInternelBufferSize - freeBytesInDecoder;
+        ALOGI("diff(%d) > 0, mDecoderInternelBufferSize(%u), freeBytesInDecoder(%u)",
+              diff, mDecoderInternelBufferSize, freeBytesInDecoder);
+        return diff;
+    }
+}
+
+void SoftAAC2::handleAviWithRawAAC() {
+    ALOGD("mIsRawAac(%d), mIsErrorCsdHandled(%d), mInputBufferCount(%zu)",
+          mIsRawAac, mIsErrorCsdHandled, mInputBufferCount);
+
+    if (mIsRawAac && !mIsErrorCsdHandled) {
+        UCHAR* csdTemp[FILEREAD_MAX_LAYERS];
+        UINT   csdLength[FILEREAD_MAX_LAYERS] = {0};
+        uint32_t sampleIndex = ((mAACConfigSpecificData[0] & 0x7) << 1) | ((mAACConfigSpecificData[1] & 0x80) >> 7);
+        ALOGD("====AAC Config info: 0x%x, 0x%x, SampleIndex = 0x%x", mAACConfigSpecificData[0], mAACConfigSpecificData[1], sampleIndex);
+        if (sampleIndex <= 8)
+        {
+            sampleIndex += 3;
+            mAACConfigSpecificData[0] = (mAACConfigSpecificData[0] & 0xF8) | ((sampleIndex & 0xE) >> 1);
+            mAACConfigSpecificData[1] = (mAACConfigSpecificData[1] & 0x7F) | ((sampleIndex & 0x1) << 7);
+            ALOGD("====Handled, AAC Config info: 0x%x, 0x%x, SampleIndex = 0x%x",
+                mAACConfigSpecificData[0], mAACConfigSpecificData[1], sampleIndex);
+        }
+        csdTemp[0] = mAACConfigSpecificData;
+        csdLength[0] = 2;
+        mIsErrorCsdHandled = true;
+        //mStreamInfo->sampleRate = 0;
+        AAC_DECODER_ERROR cfgError =
+            aacDecoder_ConfigRaw(mAACDecoder,
+            csdTemp,
+            csdLength);
+        if (cfgError != AAC_DEC_OK) {
+            ALOGW("aacDecoder_ConfigRaw decoderErr = 0x%4.4x", cfgError);
+            mSignalledError = true;
+            notify(OMX_EventError, OMX_ErrorUndefined, cfgError, NULL);
+            return;
+        }
+    }
+}
+
+void SoftAAC2::dumpDecoderIn(void *inBuffer, UINT size) {
+    if (mDecoderDump) {
+        FILE *fpin = fopen("/sdcard/aacdecoder_in.bs", "ab");
+        if (fpin) {
+            fwrite(inBuffer, 1, size, fpin);
+            fclose(fpin);
+        } else {
+            ALOGI("failed to open /sdcard/aacdecoder_in.bs");
+        }
+    }
+}
+
+void SoftAAC2::dumpDecoderOut(void *inBuffer, int32_t size, int i) {
+    if (mDecoderDump) {
+        char outFile[128] = {0};
+        sprintf(outFile, "/sdcard/aacdecoder_out_%d.pcm", i);
+        /*
+           aacdecoder_outl.pcm
+           aacdecoder_outr.pcm
+           aacdecoder_outc.pcm
+           aacdecoder_outlfe.pcm
+           aacdecoder_outls.pcm
+           aacdecoder_outrs.pcm
+         */
+        FILE *fpout = fopen(outFile, "ab");
+        if (fpout) {
+            fwrite(inBuffer, 1, size, fpout);
+            fclose(fpout);
+        } else {
+            ALOGI("failed to open /sdcard/aacdecoder_out.pcm");
+        }
+    }
+}
+#endif // MTK_AOSP_ENHANCEMENT
 }  // namespace android
 
 android::SoftOMXComponent *createSoftOMXComponent(

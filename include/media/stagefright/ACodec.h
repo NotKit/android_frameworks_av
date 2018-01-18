@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,6 +36,15 @@
 #include <OMX_Audio.h>
 
 #define TRACK_BUFFER_TIMING     0
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#define VIDEO_M4U_MAX_BUFFER 100
+#define APPLY_CHECKING_FLUSH_COMPLETED 1
+#define APPLY_CHECKING_FBDEOS_COMPLETED 0
+#define APPLY_CHECKING_COMPLETED_INIT_MASK 0
+#define APPLY_CHECKING_COMPLETED_EOS_MASK 1
+#define APPLY_CHECKING_COMPLETED_FLUSH_MASK 2
+#endif //MTK_AOSP_ENHANCEMENT
 
 namespace android {
 
@@ -153,6 +167,14 @@ private:
         kWhatSubmitOutputMetadataBufferIfEOS = 'subm',
         kWhatOMXDied                 = 'OMXd',
         kWhatReleaseCodecInstance    = 'relC',
+#ifdef MTK_AOSP_ENHANCEMENT
+#if APPLY_CHECKING_FLUSH_COMPLETED
+        kWhatMtkVdecCheckFlushDone   = 'MVdF',
+#endif //APPLY_CHECKING_FLUSH_COMPLETED
+#ifdef APPLY_CHECKING_FBDEOS_COMPLETED
+        kWhatMtkVdecCheckFBDEOSDone   = 'MVnD',
+#endif //APPLY_CHECKING_FBDEOS_COMPLETED
+#endif//MTK_AOSP_ENHANCEMENT
     };
 
     enum {
@@ -164,6 +186,9 @@ private:
         kFlagIsSecure                                 = 1,
         kFlagPushBlankBuffersToNativeWindowOnShutdown = 2,
         kFlagIsGrallocUsageProtected                  = 4,
+#ifdef MTK_AOSP_ENHANCEMENT
+        kFlagIsProtect                                = 8,
+#endif // MTK_AOSP_ENHANCEMENT
     };
 
     enum {
@@ -180,6 +205,9 @@ private:
             OWNED_BY_DOWNSTREAM,
             OWNED_BY_NATIVE_WINDOW,
             UNRECOGNIZED,            // not a tracked buffer
+#ifdef MTK_AOSP_ENHANCEMENT
+            OWNED_BY_UNEXPECTED,
+#endif //MTK_AOSP_ENHANCEMENT
         };
 
         static inline Status getSafeStatus(BufferInfo *info) {
@@ -208,6 +236,9 @@ private:
         // Log error, if the current fence is not a read/write fence.
         void checkReadFence(const char *dbg);
         void checkWriteFence(const char *dbg);
+#ifdef MTK_AOSP_ENHANCEMENT
+        unsigned mClearMotionEnabled;
+#endif
     };
 
     static const char *_asString(BufferInfo::Status s);
@@ -262,6 +293,7 @@ private:
 
     FrameRenderTracker mRenderTracker; // render information for buffers rendered by ACodec
     Vector<BufferInfo> mBuffers[2];
+
     bool mPortEOS[2];
     status_t mInputEOSResult;
 
@@ -294,6 +326,7 @@ private:
     sp<DataConverter> mConverter[2];
 
     int64_t mRepeatFrameDelayUs;
+
     int64_t mMaxPtsGapUs;
     float mMaxFps;
 
@@ -563,6 +596,93 @@ private:
     void onSignalEndOfInputStream();
 
     DISALLOW_EVIL_CONSTRUCTORS(ACodec);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+#if APPLY_CHECKING_FLUSH_COMPLETED
+    void signalVDecFlushDoneCheck(int delayTime, int mTimeOut);
+    status_t setVDecCheckFlushDone(int delayTime, int mTimeOut);   //should be private
+#endif //APPLY_CHECKING_FLUSH_COMPLETED
+    status_t getOmxVdecColorFormat(OMX_COLOR_FORMATTYPE *colorFormat);
+
+private:
+    bool mSupportsPartialFrames;
+    bool mIsVideoDecoder;
+    bool mIsVideoEncoder;
+    sp<ABuffer> mLeftOverBuffer;
+    int32_t mMaxQueueBufferNum;
+    FILE* mDumpFile;
+    bool mIsDumpFile;
+    int32_t mVideoAspectRatioWidth;
+    int32_t mVideoAspectRatioHeight;
+    FILE* mDumpRawFile;
+    bool mIsDumpRawFile;
+    size_t mAlignedSize;
+    void*  mM4UBufferHandle;
+    bool mIsDumpProflingFile;
+    bool mIsFirstFillBufferDone;
+
+    int32_t mIsVideoEncoderInputSurface;
+
+#if APPLY_CHECKING_FLUSH_COMPLETED
+    uint32_t mTotalTimeDuringCheckFlush;
+    int32_t mPortsFlushComplete;
+#endif //APPLY_CHECKING_FLUSH_COMPLETED
+
+    bool mOMXLivesLocally;
+
+    bool mIsProfileFPS;
+    bool mIsProfileNWqueueBuffer;
+    static bool mIsProfileBufferActivity;
+    bool mIsAudioBufferLogSwitchOn;  // Just for control Audio  ACodec buffer
+    bool mIsVideoBufferLogSwitchOn;  // Just for control Video  ACodec buffer
+    bool mIsRecorder; // 1: recorder is processing
+    uint32_t mFrameCount;
+    int64_t mFirstPostBufferTime;
+    int64_t mLastPostBufferTime;
+
+    uint32_t mDeqFrameCount;
+    int64_t mDeqFirstPostBufferTime;
+    int64_t mDeqLastPostBufferTime;
+
+    bool mIsSlowmotion;
+    bool mIsViLTE;
+    int64_t mAnchorTimeRealUs;
+
+    int64_t mFirstDrainBufferTime;
+    int64_t mFirstTimeStamp;
+    sp<AMessage> mAVPFNotify;
+    bool mIsWFDSinkEnabled;
+
+    status_t setupWMACodec(bool encoder, int32_t numChannels, int32_t sampleRate);
+    status_t setupADPCMCodec(const char *mime, const sp<AMessage> &msg);
+    status_t setupAlacCodec(const char *mime, const sp<AMessage> &msg);
+    status_t setupMtkVorbisCodec(int32_t numChannels, int32_t sampleRate, int32_t bitRate);
+    status_t setupMtkRawCodec(int32_t numChannels, int32_t sampleRate, const sp<AMessage> &msg);
+    status_t setupMtkG711Codec(int32_t sampleRate, int32_t numChannels, const char *mime);
+    status_t setupMtkFlacCodec(int32_t numChannels, int32_t sampleRate, const sp<AMessage> &msg);
+
+    bool LogAllYourBuffersAreBelongToUs(OMX_U32 portIndex);
+    bool LogAllYourBuffersAreBelongToUs();
+
+    status_t setMTKParameters(const sp<AMessage> &params);
+    status_t profileAndQueueBuffer2NativeWindow(struct ANativeWindow* window,
+        struct ANativeWindowBuffer* buffer, int fenceFd);
+    status_t profileAndDequeueNativeWindow(ANativeWindow *anw, struct ANativeWindowBuffer** anb, int *fenceFd);
+    status_t setSlowMotionSpeed(unsigned int u4SlowMotionSpeed);
+    status_t setSlowMotionSection(int64_t i64StartTime, int64_t i64EndTime);
+    void configureInputDump();
+    void configureOutputDump();
+    void dumpInput(sp<ABuffer> buffer);
+    void dumpOutputOnOMXFBD(BufferInfo *info, size_t rangeLength);
+    void dumpOutputOnOutputBufferDrained(BufferInfo *info);
+    status_t ResolutionChange(int32_t width, int32_t height);
+
+#ifdef MTK_CLEARMOTION_SUPPORT
+    unsigned mNotUpdateVideoSize;
+#endif
+#endif
+
 };
 
 }  // namespace android

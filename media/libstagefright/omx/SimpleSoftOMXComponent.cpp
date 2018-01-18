@@ -431,20 +431,45 @@ void SimpleSoftOMXComponent::onSendCommand(
 }
 
 void SimpleSoftOMXComponent::onChangeState(OMX_STATETYPE state) {
+
     ALOGV("%p requesting change from %d to %d", this, mState, state);
     // We shouldn't be in a state transition already.
-
     if (mState == OMX_StateLoaded
             && mTargetState == OMX_StateIdle
             && state == OMX_StateLoaded) {
         // OMX specifically allows "canceling" a state transition from loaded
         // to idle. Pretend we made it to idle, and go back to loaded
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGI("load->idle canceled");
+#else
         ALOGV("load->idle canceled");
+#endif
         mState = mTargetState = OMX_StateIdle;
         state = OMX_StateLoaded;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    // Timing issue.
+    // If binder die comes, When freeBuffer do not complete.
+    // But onChangeState() called by freeNode() is called after all buffer freed.
+    // At this time, state == OMX_StateLoaded. mState ==  OMX_StateLoaded.
+    // So there is no need to do something when state == mState.
+    if (state == mState) {
+        ALOGE("Warnning: state==mState, mState = %d, mTargetState=%d", state, mTargetState);
+        return;
+    }
+
+    // If binder die comes, when freeBuffer do not complete.
+    // At this time, mState == OMX_StateIdle, but mTargetState == OMX_StateLoaded.
+    // So if there is no need to CHECK_EQ((int)mState, (int)mTargetState);
+    if (mState != mTargetState) {
+        ALOGE("Warnning: mState != mTargetState, mState = %d, mTargetState = %d, state=%d",
+                      mState, mTargetState, state);
+        return;
+    }
+#else
     CHECK_EQ((int)mState, (int)mTargetState);
+#endif
 
     switch (mState) {
         case OMX_StateLoaded:

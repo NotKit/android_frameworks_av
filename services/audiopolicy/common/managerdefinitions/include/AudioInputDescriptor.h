@@ -95,7 +95,7 @@ public:
 
     // count active capture sessions using one of the specified devices.
     // ignore devices if AUDIO_DEVICE_IN_DEFAULT is passed
-    uint32_t activeInputsCountOnDevices(audio_devices_t devices = AUDIO_DEVICE_IN_DEFAULT) const;
+    uint32_t activeInputsCountOnDevices(audio_devices_t devices = AUDIO_DEVICE_IN_DEFAULT, bool ignoreVirtualInputs = false) const;
 
     /**
      * return io handle of active input or 0 if no input is active

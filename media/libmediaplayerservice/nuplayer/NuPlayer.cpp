@@ -57,6 +57,11 @@
 #include "ESDS.h"
 #include <media/stagefright/Utils.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#define ATRACE_TAG ATRACE_TAG_VIDEO
+#include <utils/Trace.h>
+#endif
+#include <media/MtkMMLog.h>
 namespace android {
 
 struct NuPlayer::Action : public RefBase {
@@ -195,9 +200,14 @@ NuPlayer::NuPlayer(pid_t pid)
       mPausedByClient(true),
       mPausedForBuffering(false) {
     clearFlushComplete();
+
+#ifdef MTK_AOSP_ENHANCEMENT
+  init_ext();
+#endif
 }
 
 NuPlayer::~NuPlayer() {
+    MM_LOGD("~NuPlayer");
 }
 
 void NuPlayer::setUID(uid_t uid) {
@@ -210,6 +220,9 @@ void NuPlayer::setDriver(const wp<NuPlayerDriver> &driver) {
 }
 
 void NuPlayer::setDataSourceAsync(const sp<IStreamSource> &source) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    mIsStreamSource = true;
+#endif
     sp<AMessage> msg = new AMessage(kWhatSetDataSource, this);
 
     sp<AMessage> notify = new AMessage(kWhatSourceNotify, this);
@@ -235,19 +248,29 @@ static bool IsHTTPLiveURL(const char *url) {
     return false;
 }
 
+
 void NuPlayer::setDataSourceAsync(
         const sp<IMediaHTTPService> &httpService,
         const char *url,
         const KeyedVector<String8, String8> *headers) {
 
     sp<AMessage> msg = new AMessage(kWhatSetDataSource, this);
+#ifndef MTK_AOSP_ENHANCEMENT
     size_t len = strlen(url);
-
+#endif
     sp<AMessage> notify = new AMessage(kWhatSourceNotify, this);
 
     sp<Source> source;
     if (IsHTTPLiveURL(url)) {
         source = new HTTPLiveSource(notify, httpService, url, headers);
+#ifdef MTK_AOSP_ENHANCEMENT
+        mDataSourceType = SOURCE_HttpLive;
+#endif
+#ifdef MTK_AOSP_ENHANCEMENT
+    } else if (IsRtspURL(url) || IsRtspSDP(url)) {
+        ALOGI("Is RTSP Streaming");
+        source = new RTSPSource(notify, httpService, url, headers, mUIDValid, mUID, IsRtspSDP(url));
+#else
     } else if (!strncasecmp(url, "rtsp://", 7)) {
         source = new RTSPSource(
                 notify, httpService, url, headers, mUIDValid, mUID);
@@ -257,7 +280,18 @@ void NuPlayer::setDataSourceAsync(
                     || strstr(url, ".sdp?"))) {
         source = new RTSPSource(
                 notify, httpService, url, headers, mUIDValid, mUID, true);
+#endif
     } else {
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (!strncasecmp(url, "http://", 7)
+                || !strncasecmp(url, "https://", 8)) {
+            mDataSourceType = SOURCE_Http;
+            ALOGI("Is http Streaming");
+        } else {
+            mDataSourceType = SOURCE_Local;
+            ALOGI("local stream:%s", url);
+        }
+#endif
         sp<GenericSource> genericSource =
                 new GenericSource(notify, mUIDValid, mUID);
         // Don't set FLAG_SECURE on mSourceFlags here for widevine.
@@ -292,7 +326,14 @@ void NuPlayer::setDataSourceAsync(int fd, int64_t offset, int64_t length) {
     }
 
     msg->setObject("source", source);
+#ifdef MTK_AOSP_ENHANCEMENT
+    err = setDataSourceAsync_proCheck(msg,notify);
+    if (err == OK) {
+        msg->post();
+    }
+#else
     msg->post();
+#endif
 }
 
 void NuPlayer::setDataSourceAsync(const sp<DataSource> &dataSource) {
@@ -320,8 +361,10 @@ void NuPlayer::setVideoSurfaceTextureAsync(
     sp<AMessage> msg = new AMessage(kWhatSetVideoSurface, this);
 
     if (bufferProducer == NULL) {
+        MM_LOGI("Set null surface");
         msg->setObject("surface", NULL);
     } else {
+        MM_LOGI("Set new surface");
         msg->setObject("surface", new Surface(bufferProducer, true /* controlledByApp */));
     }
 
@@ -400,6 +443,7 @@ void NuPlayer::pause() {
 }
 
 void NuPlayer::resetAsync() {
+    MM_LOGI("mSource:%d", (mSource != NULL));
     sp<Source> source;
     {
         Mutex::Autolock autoLock(mSourceLock);
@@ -482,8 +526,20 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
     switch (msg->what()) {
         case kWhatSetDataSource:
         {
-            ALOGV("kWhatSetDataSource");
+            ALOGD("kWhatSetDataSource");
+ #ifdef MTK_AOSP_ENHANCEMENT
+        ATRACE_ASYNC_BEGIN("setDataSource",mPlayerCnt);
+        if(mSource == NULL) {
+                int32_t result;
+            if(msg->findInt32("result", &result)) {
+                ALOGW("kWhatSetDataSource, notify driver result");
+                sp<NuPlayerDriver> driver = mDriver.promote();
+                driver->notifySetDataSourceCompleted(result);
+                break;
+            }
+        }
 
+#endif
             CHECK(mSource == NULL);
 
             status_t err = OK;
@@ -501,11 +557,33 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
             if (driver != NULL) {
                 driver->notifySetDataSourceCompleted(err);
             }
+ #ifdef MTK_AOSP_ENHANCEMENT
+        ATRACE_ASYNC_END("setDataSource",mPlayerCnt);
+ #endif
             break;
         }
 
         case kWhatPrepare:
         {
+#ifdef MTK_AOSP_ENHANCEMENT
+           ATRACE_ASYNC_BEGIN("Prepare",mPlayerCnt);
+
+            ALOGD("kWhatPrepare, source type = %d", (int)mDataSourceType);
+            if (mPrepare == PREPARING)
+                break;
+            mPrepare = PREPARING;
+            if (mSource == NULL) {
+                ALOGW("prepare error: source is not ready");
+                finishPrepare(UNKNOWN_ERROR);
+                break;
+            }
+            if(mIsMtkPlayback){
+                ALOGD("Turn on MTK music Enhancement = %d",mIsMtkPlayback);
+                sp<MetaData> meta = new MetaData;
+                meta->setInt32(kKeyIsMtkMusic,1);
+                mSource->setParams(meta);
+            }
+#endif
             mSource->prepareAsync();
             break;
         }
@@ -596,7 +674,6 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
             if (trackIndex < inbandTracks) {
                 err = mSource->selectTrack(trackIndex, select, timeUs);
-
                 if (!select && err == OK) {
                     int32_t type;
                     sp<AMessage> info = mSource->getTrackInfo(trackIndex);
@@ -635,7 +712,15 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
             if (mDriver != NULL && mSource->getDuration(&durationUs) == OK) {
                 sp<NuPlayerDriver> driver = mDriver.promote();
                 if (driver != NULL) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if (mIsMtkPlayback && mDataSourceType == SOURCE_Local) {
+                        driver->notifyUpdateDuration(durationUs);
+                    } else {
+                        driver->notifyDuration(durationUs);
+                    }
+#else
                     driver->notifyDuration(durationUs);
+#endif
                 }
             }
 
@@ -655,6 +740,15 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                     (mSource != NULL && mStarted && mSource->getFormat(false /* audio */) != NULL
                             && mVideoDecoder != NULL) ? "have" : "no");
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            // http Streaming should not getFormat, it would block by network
+            if (mSource == NULL|| !mStarted || (mDataSourceType == SOURCE_Http && !(mSource->hasVideo()))
+                    || (mDataSourceType != SOURCE_Http && mSource->getFormat(false /* audio */) == NULL)
+                        || (mVideoDecoder != NULL && mVideoDecoder->setVideoSurface(surface) == OK)) {
+                performSetSurface(surface);
+                break;
+            }
+#else
             // Need to check mStarted before calling mSource->getFormat because NuPlayer might
             // be in preparing state and it could take long time.
             // When mStarted is true, mSource must have been set.
@@ -664,6 +758,7 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 performSetSurface(surface);
                 break;
             }
+#endif
 
             mDeferredActions.push_back(
                     new FlushDecoderAction(FLUSH_CMD_FLUSH /* audio */,
@@ -702,21 +797,34 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
         case kWhatSetAudioSink:
         {
-            ALOGV("kWhatSetAudioSink");
+            ALOGD("kWhatSetAudioSink");
 
             sp<RefBase> obj;
             CHECK(msg->findObject("sink", &obj));
 
             mAudioSink = static_cast<MediaPlayerBase::AudioSink *>(obj.get());
+            ALOGD("\t\taudio sink: %p", mAudioSink.get());
             break;
         }
 
         case kWhatStart:
         {
             ALOGV("kWhatStart");
+            MM_LOGI("kWhatStart:,mStarted:%d,mPausedForBuffering:%d,H:%d",
+                    mStarted, mPausedForBuffering, mHaveSanSources);
             if (mStarted) {
                 // do not resume yet if the source is still buffering
                 if (!mPausedForBuffering) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    // ALPS02318704, when audio format is supported by parser, but audio codec config error,
+                    // suspend/resume, video can not play. Because instantiate audio decoder return error when
+                    // video decoder has not been instantiated, so nuplayer will notify 262 to AP.
+                    if (mIsMtkPlayback && !mHaveSanSources) {
+                        if (mDataSourceType == SOURCE_Local || mDataSourceType == SOURCE_Http) {
+                            onScanSources();
+                        }
+                    }
+#endif
                     onResume();
                 }
             } else {
@@ -877,8 +985,25 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
             }
 
             mScanSourcesPending = false;
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (!mIsStreamSource && !mOffloadAudio) {       // StreamSource & AudioOffload should use google default, due to 3rd party usage
+                scanSource_l(msg);
+                if (mVideoDecoder != NULL && mAudioDecoder != NULL && mRenderer != NULL) {
+                    ALOGI("has video and audio");
+                    uint32_t flag = Renderer::FLAG_HAS_VIDEO_AUDIO;
+                    mRenderer->setFlags(flag, true);
+                }
 
-            ALOGV("scanning sources haveAudio=%d, haveVideo=%d",
+                if (mVideoDecoder == NULL && mAudioDecoder != NULL && mRenderer != NULL){
+                   if(mIsMtkPlayback && !mNotifyListenerVideodecoderIsNull)
+                     {notifyListener(MEDIA_SET_VIDEO_SIZE, 0, 0);}
+                      mNotifyListenerVideodecoderIsNull=true;
+                    }
+
+                break;
+            }
+#endif
+            ALOGD("scanning sources haveAudio=%d, haveVideo=%d",
                  mAudioDecoder != NULL, mVideoDecoder != NULL);
 
             bool mHadAnySourcesBefore =
@@ -934,7 +1059,7 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
         case kWhatVideoNotify:
         case kWhatAudioNotify:
         {
-            bool audio = msg->what() == kWhatAudioNotify;
+            bool audio = (msg->what() == kWhatAudioNotify);
 
             int32_t currentDecoderGeneration =
                 (audio? mAudioDecoderGeneration : mVideoDecoderGeneration);
@@ -942,7 +1067,7 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
             CHECK(msg->findInt32("generation", &requesterGeneration));
 
             if (requesterGeneration != currentDecoderGeneration) {
-                ALOGV("got message from old %s decoder, generation(%d:%d)",
+                ALOGD("got message from old %s decoder, generation(%d:%d)",
                         audio ? "audio" : "video", requesterGeneration,
                         currentDecoderGeneration);
                 sp<AMessage> reply;
@@ -962,7 +1087,7 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 int32_t formatChange;
                 CHECK(msg->findInt32("formatChange", &formatChange));
 
-                ALOGV("%s discontinuity: formatChange %d",
+                ALOGD("%s discontinuity: formatChange %d",
                         audio ? "audio" : "video", formatChange);
 
                 if (formatChange) {
@@ -982,15 +1107,17 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 CHECK(msg->findInt32("err", &err));
 
                 if (err == ERROR_END_OF_STREAM) {
-                    ALOGV("got %s decoder EOS", audio ? "audio" : "video");
-                } else {
-                    ALOGV("got %s decoder EOS w/ error %d",
+                    ALOGD("got %s decoder EOS", audio ? "audio" : "video");
+                }
+                else {
+                    ALOGD("got %s decoder EOS w/ error %d",
                          audio ? "audio" : "video",
                          err);
                 }
 
                 mRenderer->queueEOS(audio, err);
             } else if (what == DecoderBase::kWhatFlushCompleted) {
+                MM_LOGD("decoder %s flush completed", audio ? "audio" : "video");
                 ALOGV("decoder %s flush completed", audio ? "audio" : "video");
 
                 handleFlushComplete(audio, true /* isDecoder */);
@@ -1005,7 +1132,7 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 setVideoScalingMode(mVideoScalingMode);
                 updateVideoSize(inputFormat, format);
             } else if (what == DecoderBase::kWhatShutdownCompleted) {
-                ALOGV("%s shutdown completed", audio ? "audio" : "video");
+                ALOGD("%s shutdown completed", audio ? "audio" : "video");
                 if (audio) {
                     mAudioDecoder.clear();
                     ++mAudioDecoderGeneration;
@@ -1018,6 +1145,10 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
                     CHECK_EQ((int)mFlushingVideo, (int)SHUTTING_DOWN_DECODER);
                     mFlushingVideo = SHUT_DOWN;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+                    AudioSystem::setParameters(String8("ThrottleBufferLimitCount=1"));
+#endif
                 }
 
                 finishFlushIfPossible();
@@ -1044,7 +1175,20 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 FlushStatus *flushing = audio ? &mFlushingAudio : &mFlushingVideo;
                 ALOGE("received error(%#x) from %s decoder, flushing(%d), now shutting down",
                         err, audio ? "audio" : "video", *flushing);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (mRenderer != NULL) {
+                    if (mDataSourceType == SOURCE_Local || mDataSourceType == SOURCE_Http){
+                        if (mSource->getFormat(true) != NULL) {
+                            if(err != ERROR_END_OF_STREAM){
+                                  err = ERROR_END_OF_STREAM;
+                            }
+                            mRenderer->queueEOS(audio, err);
+                        } // when audio is shorter than video, audio eos, then video decoder error, queueEOS: ALPS01933832
+                    } else {
+                        mRenderer->queueEOS(audio, err);
+                    }
+                }
+#endif
                 switch (*flushing) {
                     case NONE:
                         mDeferredActions.push_back(
@@ -1073,7 +1217,11 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                         finishFlushIfPossible();  // Should not occur.
                         break;                    // Finish anyways.
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+         handleForACodecError(audio,msg);
+#else
                 notifyListener(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, err);
+#endif
             } else {
                 ALOGV("Unhandled decoder notification %d '%c%c%c%c'.",
                       what,
@@ -1113,23 +1261,43 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 }
 
                 if (finalResult == ERROR_END_OF_STREAM) {
-                    ALOGV("reached %s EOS", audio ? "audio" : "video");
+                    ALOGD("reached %s EOS", audio ? "audio" : "video");
                 } else {
                     ALOGE("%s track encountered an error (%d)",
-                         audio ? "audio" : "video", finalResult);
-
+                            audio ? "audio" : "video", finalResult);
+#ifdef MTK_AOSP_ENHANCEMENT
+                    handleForRenderError1(finalResult,audio);
+#else
                     notifyListener(
                             MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, finalResult);
+#endif
                 }
 
                 if ((mAudioEOS || mAudioDecoder == NULL)
-                        && (mVideoEOS || mVideoDecoder == NULL)) {
+                 && (mVideoEOS || mVideoDecoder == NULL)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if (mIsMtkPlayback && finalResult == ERROR_END_OF_STREAM){
+                        int64_t curPosition;
+                        status_t err = getCurrentPosition(&curPosition);
+                        if (err != OK) {
+                            curPosition = 0;
+                        }
+
+                        if (mSource->notifyCanNotConnectServerIfPossible(curPosition)) {
+                            ALOGI("For RTSP notify cannot connect server");
+                            break;
+                        }
+                    }
+#endif
                     notifyListener(MEDIA_PLAYBACK_COMPLETE, 0, 0);
                 }
             } else if (what == Renderer::kWhatFlushComplete) {
                 int32_t audio;
                 CHECK(msg->findInt32("audio", &audio));
 
+#ifdef MTK_AOSP_ENHANCEMENT
+                MM_LOGD("renderer %s flush completed.", audio ? "audio" : "video");
+#endif
                 if (audio) {
                     mAudioEOS = false;
                 } else {
@@ -1150,6 +1318,8 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 ALOGV("media rendering started");
                 notifyListener(MEDIA_STARTED, 0, 0);
             } else if (what == Renderer::kWhatAudioTearDown) {
+                ALOGD("Tear down audio offload, fall back to s/w path");
+
                 int32_t reason;
                 CHECK(msg->findInt32("reason", &reason));
                 ALOGV("Tear down audio with reason %d.", reason);
@@ -1162,14 +1332,36 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                 if (!msg->findInt64("positionUs", &positionUs)) {
                     positionUs = mPreviousSeekTimeUs;
                 }
+#ifdef MTK_AOSP_ENHANCEMENT
+                restartAudio(
+                        positionUs, (reason == Renderer::kForceNonOffload) ||
+                        (reason == Renderer::kDueToError) /* forceNonOffload */,
+                        reason != Renderer::kDueToTimeout /* needsToCreateAudioDecoder */);
 
+#else
                 restartAudio(
                         positionUs, reason == Renderer::kForceNonOffload /* forceNonOffload */,
                         reason != Renderer::kDueToTimeout /* needsToCreateAudioDecoder */);
+#endif
             }
+#ifdef MTK_AUDIO_TUNNELING_SUPPORT
+            else if (what == Renderer::kWhatRetryAudioOffload) {
+                ALOGD("Dead Audio Hal on offload mode, retrying...");
+                closeAudioSink();
+                mAudioDecoder.clear();
+                ++mAudioDecoderGeneration;
+                mRenderer->flush(true /* audio */, false /* notifyComplete */);
+                if (mVideoDecoder != NULL) {
+                                mRenderer->flush(false /* audio */, false /* notifyComplete */);
+                }
+                int64_t positionUs;
+                CHECK(msg->findInt64("positionUs", &positionUs));
+                ALOGD("positionUs = %llu",positionUs);
+                performSeek(positionUs);
+            }
+#endif
             break;
         }
-
         case kWhatMoreDataQueued:
         {
             break;
@@ -1177,7 +1369,7 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
         case kWhatReset:
         {
-            ALOGV("kWhatReset");
+            ALOGD("kWhatReset");
 
             mResetting = true;
 
@@ -1203,6 +1395,8 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
             ALOGV("kWhatSeek seekTimeUs=%lld us, needNotify=%d",
                     (long long)seekTimeUs, needNotify);
 
+            MM_LOGI("kWhatSeek seekTimeUs=%lld us, needNotify=%d, Started:%d ",
+                    (long long)seekTimeUs, needNotify, mStarted);
             if (!mStarted) {
                 // Seek before the player is started. In order to preview video,
                 // need to start the player and pause it. This branch is called
@@ -1224,6 +1418,13 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
                     new FlushDecoderAction(FLUSH_CMD_FLUSH /* audio */,
                                            FLUSH_CMD_FLUSH /* video */));
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            // http Streaming audio only case, notify seek complete when source seek done
+            if (mDataSourceType == SOURCE_Http && needNotify && mVideoDecoder == NULL) {
+                MM_LOGI("http Streaming audio only SeekDone false");
+                mSourceSeekDone = false;
+            }
+#endif
             mDeferredActions.push_back(
                     new SeekAction(seekTimeUs));
 
@@ -1239,6 +1440,15 @@ void NuPlayer::onMessageReceived(const sp<AMessage> &msg) {
 
         case kWhatPause:
         {
+            MM_LOGI("kWhatPause,mPausedByClient:%d, mPaused:%d",
+                     mPausedByClient, mPaused);
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef MTK_AUDIO_TUNNELING_SUPPORT
+            if(mOffloadAudio && mRenderer != NULL){
+                 mRenderer->signalRetryOffload();
+            }
+#endif
+#endif
             onPause();
             mPausedByClient = true;
             break;
@@ -1315,10 +1525,19 @@ status_t NuPlayer::onInstantiateSecureDecoders() {
 }
 
 void NuPlayer::onStart(int64_t startPositionUs) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (!mSourceStarted) {
+        mSourceStarted = true;
+        if (mSource != NULL) {
+            mSource->start();
+        }
+    }
+#else
     if (!mSourceStarted) {
         mSourceStarted = true;
         mSource->start();
     }
+#endif
     if (startPositionUs > 0) {
         performSeek(startPositionUs);
         if (mSource->getFormat(false /* audio */) == NULL) {
@@ -1356,6 +1575,13 @@ void NuPlayer::onStart(int64_t startPositionUs) {
 
     sp<AMessage> videoFormat = mSource->getFormat(false /* audio */);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    // When there is video, set throttle buffer limit to 2 for task grouping
+    if (videoFormat != NULL) {
+        AudioSystem::setParameters(String8("ThrottleBufferLimitCount=2"));
+    }
+#endif
+
     mOffloadAudio =
         canOffloadStream(audioMeta, (videoFormat != NULL), mSource->isStreaming(), streamType)
                 && (mPlaybackSettings.mSpeed == 1.f && mPlaybackSettings.mPitch == 1.f);
@@ -1367,11 +1593,19 @@ void NuPlayer::onStart(int64_t startPositionUs) {
     ++mRendererGeneration;
     notify->setInt32("generation", mRendererGeneration);
     mRenderer = new Renderer(mAudioSink, notify, flags);
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (isRTSPSource()) {
+        mRenderer->setUseSyncQueues(false);
+    } else if(isHttpLiveSource()){
+        mRenderer->setUseFlushAudioSyncQueues(true);
+    } else{
+        mRenderer->setUseSyncQueues(true);
+    }
+#endif
     mRendererLooper = new ALooper;
     mRendererLooper->setName("NuPlayerRenderer");
     mRendererLooper->start(false, false, ANDROID_PRIORITY_AUDIO);
     mRendererLooper->registerHandler(mRenderer);
-
     status_t err = mRenderer->setPlaybackSettings(mPlaybackSettings);
     if (err != OK) {
         mSource->stop();
@@ -1379,6 +1613,11 @@ void NuPlayer::onStart(int64_t startPositionUs) {
         notifyListener(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, err);
         return;
     }
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    if(mRenderer != NULL){
+        mRenderer->setsmspeed(mslowmotion_speed);
+    }
+#endif
 
     float rate = getFrameRate();
     if (rate > 0) {
@@ -1393,6 +1632,12 @@ void NuPlayer::onStart(int64_t startPositionUs) {
     }
 
     postScanSources();
+#ifdef MTK_AOSP_ENHANCEMENT
+   if (mDataSourceType == SOURCE_HttpLive || isRTSPSource()){
+       mRenderer->setLateVideoToDisplay(false);
+   }
+#endif
+
 }
 
 void NuPlayer::onPause() {
@@ -1460,15 +1705,28 @@ void NuPlayer::handleFlushComplete(bool audio, bool isDecoder) {
 void NuPlayer::finishFlushIfPossible() {
     if (mFlushingAudio != NONE && mFlushingAudio != FLUSHED
             && mFlushingAudio != SHUT_DOWN) {
+
+        MM_LOGD("not flushed, mFlushingAudio = %d", mFlushingAudio);
+
         return;
     }
 
     if (mFlushingVideo != NONE && mFlushingVideo != FLUSHED
             && mFlushingVideo != SHUT_DOWN) {
+        MM_LOGD("not flushed, mFlushingVideo = %d", mFlushingVideo);
         return;
     }
 
     ALOGV("both audio and video are flushed now.");
+    MM_LOGI("mFlushingAudio %d ,mFlushingVideo %d",mFlushingAudio,mFlushingVideo );
+#ifdef MTK_AOSP_ENHANCEMENT
+    uint32_t flag = Renderer::FLAG_HAS_VIDEO_AUDIO;
+    if (mAudioDecoder != NULL && mFlushingAudio == FLUSHED &&
+            mVideoDecoder != NULL && mFlushingVideo == FLUSHED) {
+        ALOGI("has video and audio sync queue");
+        mRenderer->setFlags(flag, true);
+    }
+#endif
 
     mFlushingAudio = NONE;
     mFlushingVideo = NONE;
@@ -1581,6 +1839,12 @@ void NuPlayer::determineAudioModeChange(const sp<AMessage> &audioFormat) {
 
 status_t NuPlayer::instantiateDecoder(
         bool audio, sp<DecoderBase> *decoder, bool checkAudioModeChange) {
+#ifdef MTK_AOSP_ENHANCEMENT
+      char tag[20];
+      snprintf(tag, sizeof(tag), "init_%s_decoder", audio?"audio":"video");
+      ATRACE_BEGIN(tag);
+#endif
+
     // The audio decoder could be cleared by tear down. If still in shut down
     // process, no need to create a new audio decoder.
     if (*decoder != NULL || (audio && mFlushingAudio == SHUT_DOWN)) {
@@ -1600,6 +1864,29 @@ status_t NuPlayer::instantiateDecoder(
 
     format->setInt32("priority", 0 /* realtime */);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mDebugDisableTrackId != 0) {        // only debug
+        if (mDebugDisableTrackId == 1 && audio) {
+            ALOGI("Only Debug  disable audio");
+            return -EWOULDBLOCK;
+        } else if (mDebugDisableTrackId == 2 && !audio) {
+            ALOGI("Only Debug  disable video");
+            return -EWOULDBLOCK;
+        }
+    }
+    if(!audio) {
+#ifdef MTK_CLEARMOTION_SUPPORT
+        format->setInt32("use-clearmotion-mode", mEnClearMotion);
+        ALOGD("mEnClearMotion(%d).", mEnClearMotion);
+        format->setInt32("use-clearmotion-mode-demo", mEnClearMotionDemo);
+        ALOGD("mEnClearMotionDemo(%d).", mEnClearMotionDemo);
+#endif
+        ALOGD("instantiate Video decoder.");
+    }
+    else {
+        ALOGD("instantiate Audio decoder.");
+    }
+#endif
     if (!audio) {
         AString mime;
         CHECK(format->findString("mime", &mime));
@@ -1662,6 +1949,20 @@ status_t NuPlayer::instantiateDecoder(
         }
     }
     (*decoder)->init();
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    if (*decoder != NULL && !(mslowmotion_start == -1 && mslowmotion_end == -1)) {
+        sp<AMessage> msg = new AMessage;
+        format->setInt64("slowmotion-start", mslowmotion_start);
+        format->setInt64("slowmotion-end", mslowmotion_end);
+        format->setInt32("slowmotion-speed", mslowmotion_speed);
+        ALOGD("(%d) instantiareDecoder-> set slowmotion start(%lld) ~ end(%lld), speed(%d)", __LINE__, (long long)mslowmotion_start, (long long)mslowmotion_end, mslowmotion_speed);
+        msg->setInt64("slowmotion-start", mslowmotion_start);
+        msg->setInt64("slowmotion-end", mslowmotion_end);
+        msg->setInt32("slowmotion-speed", mslowmotion_speed);
+        (*decoder) ->setParameters(msg);
+    }
+#endif
+
     (*decoder)->configure(format);
 
     // allocate buffers to decrypt widevine source buffers
@@ -1707,6 +2008,10 @@ status_t NuPlayer::instantiateDecoder(
             (*decoder)->setParameters(params);
         }
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+      ATRACE_END();
+#endif
     return OK;
 }
 
@@ -1725,6 +2030,11 @@ void NuPlayer::updateVideoSize(
         CHECK(outputFormat->findInt32("width", &width));
         CHECK(outputFormat->findInt32("height", &height));
 
+#ifdef MTK_AOSP_ENHANCEMENT
+        updataVideoSize_ext(outputFormat,&displayWidth,&displayHeight);
+
+#else
+        // Use decoder's output info.
         int32_t cropLeft, cropTop, cropRight, cropBottom;
         CHECK(outputFormat->findRect(
                     "crop",
@@ -1733,15 +2043,33 @@ void NuPlayer::updateVideoSize(
         displayWidth = cropRight - cropLeft + 1;
         displayHeight = cropBottom - cropTop + 1;
 
-        ALOGV("Video output format changed to %d x %d "
+        ALOGI("Video output format changed to %d x %d "
              "(crop: %d x %d @ (%d, %d))",
              width, height,
              displayWidth,
              displayHeight,
              cropLeft, cropTop);
+#endif // AOSP ENHANCEMENT
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        int32_t WRatio, HRatio;
+        if (!outputFormat->findInt32("width-ratio", &WRatio)) {
+            WRatio = 1;
+        }
+        if (!outputFormat->findInt32("height-ratio", &HRatio)) {
+            HRatio = 1;
+        }
+        displayWidth *= WRatio;
+        displayHeight *= HRatio;
+#endif
     } else {
         CHECK(inputFormat->findInt32("width", &displayWidth));
         CHECK(inputFormat->findInt32("height", &displayHeight));
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        m_i4ContainerWidth = displayWidth;
+        m_i4ContainerHeight = displayHeight;
+#endif
 
         ALOGV("Video input format %d x %d", displayWidth, displayHeight);
     }
@@ -1750,10 +2078,16 @@ void NuPlayer::updateVideoSize(
     int32_t sarWidth, sarHeight;
     if (inputFormat->findInt32("sar-width", &sarWidth)
             && inputFormat->findInt32("sar-height", &sarHeight)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        if((sarWidth > 0) && (sarHeight > 0)){
+            ALOGD("Sample aspect ratio %d : %d", sarWidth, sarHeight);
+            displayWidth = (displayWidth * sarWidth) / sarHeight;
+        }
+#else
         ALOGV("Sample aspect ratio %d : %d", sarWidth, sarHeight);
 
         displayWidth = (displayWidth * sarWidth) / sarHeight;
-
+#endif
         ALOGV("display dimensions %d x %d", displayWidth, displayHeight);
     }
 
@@ -1785,11 +2119,14 @@ void NuPlayer::notifyListener(int msg, int ext1, int ext2, const Parcel *in) {
         return;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    reviseNotifyErrorCode(msg,&ext1,&ext2);
+#endif
     driver->notifyListener(msg, ext1, ext2, in);
 }
 
 void NuPlayer::flushDecoder(bool audio, bool needShutdown) {
-    ALOGV("[%s] flushDecoder needShutdown=%d",
+    ALOGD("[%s] flushDecoder needShutdown=%d",
           audio ? "audio" : "video", needShutdown);
 
     const sp<DecoderBase> &decoder = getDecoder(audio);
@@ -1881,6 +2218,7 @@ status_t NuPlayer::selectTrack(size_t trackIndex, bool select, int64_t timeUs) {
     sp<AMessage> msg = new AMessage(kWhatSelectTrack, this);
     msg->setSize("trackIndex", trackIndex);
     msg->setInt32("select", select);
+    MM_LOGI("[select track] selectTrack: trackIndex = %zu and select=%d, timeUs:%lld", trackIndex, select, (long long)timeUs);
     msg->setInt64("timeUs", timeUs);
 
     sp<AMessage> response;
@@ -1978,7 +2316,7 @@ void NuPlayer::processDeferredActions() {
 }
 
 void NuPlayer::performSeek(int64_t seekTimeUs) {
-    ALOGV("performSeek seekTimeUs=%lld us (%.2f secs)",
+    ALOGI("performSeek seekTimeUs=%lld us (%.2f secs)",
           (long long)seekTimeUs,
           seekTimeUs / 1E6);
 
@@ -1990,14 +2328,19 @@ void NuPlayer::performSeek(int64_t seekTimeUs) {
                 mAudioDecoder.get(), mVideoDecoder.get());
         return;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    performSeek_l(seekTimeUs);
+#else
     mPreviousSeekTimeUs = seekTimeUs;
     mSource->seekTo(seekTimeUs);
+#endif
     ++mTimedTextGeneration;
 
     // everything's flushed, continue playback.
 }
 
 void NuPlayer::performDecoderFlush(FlushCommand audio, FlushCommand video) {
+    MM_LOGD("performDecoderFlush audio=%d, video=%d", audio, video);
     ALOGV("performDecoderFlush audio=%d, video=%d", audio, video);
 
     if ((audio == FLUSH_CMD_NONE || mAudioDecoder == NULL)
@@ -2015,7 +2358,7 @@ void NuPlayer::performDecoderFlush(FlushCommand audio, FlushCommand video) {
 }
 
 void NuPlayer::performReset() {
-    ALOGV("performReset");
+    ALOGD("performReset");
 
     CHECK(mAudioDecoder == NULL);
     CHECK(mVideoDecoder == NULL);
@@ -2056,7 +2399,7 @@ void NuPlayer::performReset() {
 }
 
 void NuPlayer::performScanSources() {
-    ALOGV("performScanSources");
+    ALOGD("performScanSources");
 
     if (!mStarted) {
         return;
@@ -2073,6 +2416,9 @@ void NuPlayer::performSetSurface(const sp<Surface> &surface) {
     mSurface = surface;
 
     // XXX - ignore error from setVideoScalingMode for now
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mSurface != NULL && mSurface.get() != NULL)
+#endif
     setVideoScalingMode(mVideoScalingMode);
 
     if (mDriver != NULL) {
@@ -2084,11 +2430,19 @@ void NuPlayer::performSetSurface(const sp<Surface> &surface) {
 }
 
 void NuPlayer::performResumeDecoders(bool needNotify) {
+    ALOGI("performResumeDecoders needNotify = %d mVideoDecoder = %p mAudioDecoder = %p", needNotify, mVideoDecoder.get(), mAudioDecoder.get());
+
     if (needNotify) {
         mResumePending = true;
         if (mVideoDecoder == NULL) {
             // if audio-only, we can notify seek complete now,
             // as the resume operation will be relatively fast.
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (mDataSourceType == SOURCE_Http) {
+                mResumePending = false;
+                ALOGI("Http streaming audio only notify seek complete when source seek done");
+            } else
+#endif
             finishResume();
         }
     }
@@ -2167,6 +2521,9 @@ void NuPlayer::onSourceNotify(const sp<AMessage> &msg) {
                 mPrepared = true;
             }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            onSourcePrepard(err);
+#else
             sp<NuPlayerDriver> driver = mDriver.promote();
             if (driver != NULL) {
                 // notify duration first, so that it's definitely set when
@@ -2177,7 +2534,7 @@ void NuPlayer::onSourceNotify(const sp<AMessage> &msg) {
                 }
                 driver->notifyPrepareCompleted(err);
             }
-
+#endif
             break;
         }
 
@@ -2228,6 +2585,16 @@ void NuPlayer::onSourceNotify(const sp<AMessage> &msg) {
 
         case Source::kWhatPauseOnBufferingStart:
         {
+#ifdef MTK_AOSP_ENHANCEMENT
+            if(isRTSPSource()){
+                ALOGI("RTSP kWhatPauseOnBufferingStart");
+                notifyListener(MEDIA_INFO, MEDIA_INFO_BUFFERING_START, 0);
+                if (mRenderer != NULL) {
+                    mRenderer->notifyBufferingStart();
+                }
+                break;
+            }
+#endif
             // ignore if not playing
             if (mStarted) {
                 ALOGI("buffer low, pausing...");
@@ -2235,12 +2602,25 @@ void NuPlayer::onSourceNotify(const sp<AMessage> &msg) {
                 mPausedForBuffering = true;
                 onPause();
             }
+
+
             notifyListener(MEDIA_INFO, MEDIA_INFO_BUFFERING_START, 0);
             break;
         }
 
         case Source::kWhatResumeOnBufferingEnd:
         {
+#ifdef MTK_AOSP_ENHANCEMENT
+            if(isRTSPSource()){
+                ALOGI("RTSP kWhatResumeOnBufferingEnd");
+                notifyListener(MEDIA_INFO, MEDIA_INFO_BUFFERING_END, 0);
+                if (mRenderer != NULL) {
+                    mRenderer->notifyBufferingEnd();
+                }
+                break;
+            }
+#endif
+
             // ignore if not playing
             if (mStarted) {
                 ALOGI("buffer ready, resuming...");
@@ -2252,6 +2632,7 @@ void NuPlayer::onSourceNotify(const sp<AMessage> &msg) {
                     onResume();
                 }
             }
+
             notifyListener(MEDIA_INFO, MEDIA_INFO_BUFFERING_END, 0);
             break;
         }
@@ -2307,6 +2688,7 @@ void NuPlayer::onSourceNotify(const sp<AMessage> &msg) {
             posUs = (int64_t) posMs * 1000ll;
             CHECK(buffer->meta()->findInt64("timeUs", &timeUs));
 
+            MM_LOGI("posUs:%lld, timeUs:%lld", (long long)posUs, (long long)timeUs);
             if (posUs < timeUs) {
                 if (!msg->findInt32("generation", &generation)) {
                     msg->setInt32("generation", mTimedTextGeneration);
@@ -2338,6 +2720,9 @@ void NuPlayer::onSourceNotify(const sp<AMessage> &msg) {
         }
 
         default:
+#ifdef MTK_AOSP_ENHANCEMENT
+        if(!onSourceNotify_ext(msg))
+#endif
             TRESPASS();
     }
 }
@@ -2351,7 +2736,7 @@ void NuPlayer::onClosedCaptionNotify(const sp<AMessage> &msg) {
         {
             sp<ABuffer> buffer;
             CHECK(msg->findBuffer("buffer", &buffer));
-
+            ALOGD("rock kWhatClosedCaptionData");
             size_t inbandTracks = 0;
             if (mSource != NULL) {
                 inbandTracks = mSource->getTrackCount();
@@ -2363,6 +2748,7 @@ void NuPlayer::onClosedCaptionNotify(const sp<AMessage> &msg) {
 
         case NuPlayer::CCDecoder::kWhatTrackAdded:
         {
+            ALOGD("rock kWhatTrackAdded");
             notifyListener(MEDIA_INFO, MEDIA_INFO_METADATA_UPDATE, 0);
 
             break;
@@ -2433,6 +2819,17 @@ void NuPlayer::sendTimedTextData(const sp<ABuffer> &buffer) {
     }
 
     if ((parcel.dataSize() > 0)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        // debug for check send string content, include properties and timedtext .etc.
+        {
+            //int num = parcel.dataSize();
+            const uint8_t *tmp = (uint8_t *)parcel.data();
+            if (tmp[0] == 0x66 && tmp[4] == 0x7 && tmp[12] == 0x10) {
+                int textlen = *(uint32_t *)&(tmp[16]);
+                ALOGI("text len:%d", textlen);
+            }
+        }
+#endif
         notifyListener(MEDIA_TIMED_TEXT, 0, 0, &parcel);
     } else {  // send an empty timed text
         notifyListener(MEDIA_TIMED_TEXT, 0, 0);
@@ -2486,5 +2883,675 @@ void NuPlayer::Source::notifyInstantiateSecureDecoders(const sp<AMessage> &reply
 void NuPlayer::Source::onMessageReceived(const sp<AMessage> & /* msg */) {
     TRESPASS();
 }
+#ifdef MTK_AOSP_ENHANCEMENT
+
+int32_t NuPlayer::mPlayerCnt = 0;
+
+ bool NuPlayer::IsHttpURL(const char *url) {
+    return (!strncasecmp(url, "http://", 7) || !strncasecmp(url, "https://", 8));
+}
+
+bool NuPlayer::IsRtspURL(const char *url) {
+    return !strncasecmp(url, "rtsp://", 7);
+}
+
+bool NuPlayer::IsRtspSDP(const char *url) {
+    size_t len = strlen(url);
+    bool isSDP = (len >= 4 && !strcasecmp(".sdp", &url[len - 4])) || strstr(url, ".sdp?");
+    return (IsHttpURL(url) && isSDP);
+}
+
+void NuPlayer::init_ext(){
+    mVideoDecoder = NULL;
+    mAudioDecoder = NULL;
+    mRenderer = NULL;
+    mFlags =0;
+    mPrepare = UNPREPARED;
+    mDataSourceType = SOURCE_Default;
+    mAudioOnly = false;
+    mVideoOnly =false;
+    mVideoinfoNotify =false;
+    mAudioinfoNotify =false;
+    mNotifyListenerVideodecoderIsNull =false;
+#ifdef MTK_CLEARMOTION_SUPPORT
+    m_i4ContainerWidth =-1;
+    m_i4ContainerHeight =-1;
+    mEnClearMotion =1;
+    mEnClearMotionDemo =0;
+#endif
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+    mslowmotion_start = -1;
+    mslowmotion_end = -1;
+    mslowmotion_speed = -1;
+#endif
+
+    char value[PROPERTY_VALUE_MAX];   // only debug
+    if (property_get("nuplayer.debug.disable.track", value, NULL)) {
+        mDebugDisableTrackId = atoi(value);
+    } else {
+        mDebugDisableTrackId = 0;
+    }
+    ALOGI("disable trackId:%d", mDebugDisableTrackId);
+    mIsStreamSource = false;
+    mDeferTriggerSeekTimes =-1;//for suspend-resume-seek
+    mIsMtkPlayback = false;
+    mSourceSeekDone = true;
+    mHaveSanSources = false; // for ALPS02318704; when audio decoder config error, suspend/resume video can not play.
+}
+
+bool NuPlayer::onSourceNotify_ext(const sp<AMessage> &msg){
+    int32_t what;
+    CHECK(msg->findInt32("what", &what));
+
+    switch (what) {
+        case Source::kWhatDurationUpdate:
+        {
+            int64_t durationUs;
+            if (mDataSourceType != SOURCE_Local)
+            {
+                //only handle local playback
+                break;
+            }
+            CHECK(msg->findInt64("durationUs", &durationUs));
+            sp<NuPlayerDriver> driver = mDriver.promote();
+            if (driver != NULL) {
+                // notify duration
+               driver->notifyUpdateDuration(durationUs);
+            }
+            break;
+        }
+        case Source::kWhatSourceError:
+        {
+            int32_t err;
+            CHECK(msg->findInt32("err", &err));
+            if (!mIsMtkPlayback && mDataSourceType == SOURCE_Http){
+                ALOGI("http not mtk playback, do not notify not android error");
+            } else {
+                notifyListener(MEDIA_ERROR, err, 0);
+            }
+            ALOGI("Source err");
+            break;
+        }
+        case Source::kWhatBufferNotify:
+        case Source::kWhatSeekDone:
+        case NuPlayer::Source::kWhatPicture:// orange compliance
+             onSourceNotify_l(msg);
+        break;
+      default:
+        return false;
+        }
+    return true;
+}
+
+void NuPlayer::updataVideoSize_ext(const sp<AMessage> &outputFormat,int32_t *displayWidth,int32_t *displayHeight){
+    int32_t width, height;
+        CHECK(outputFormat->findInt32("width", &width));
+        CHECK(outputFormat->findInt32("height", &height));
+#ifdef MTK_CLEARMOTION_SUPPORT
+        int32_t NotUpdateVideoSize = 0;
+        outputFormat->findInt32("NotUpdateVideoSize", &NotUpdateVideoSize);
+
+        if (NotUpdateVideoSize > 0)
+        {
+            if (m_i4ContainerWidth > 0 && m_i4ContainerHeight > 0)
+            {
+                *displayWidth = m_i4ContainerWidth;
+                *displayHeight = m_i4ContainerHeight;
+
+            ALOGD("Video output format changed to %d x %d "
+                 "force set (%d, %d))",
+                 width, height,
+                 *displayWidth,
+                * displayHeight);
+            }
+            else
+            {
+                // Can't get video size info from extractor. Try to use decoder's output info.
+                int32_t cropLeft, cropTop, cropRight, cropBottom;
+                CHECK(outputFormat->findRect(
+                            "crop",
+                            &cropLeft, &cropTop, &cropRight, &cropBottom));
+
+                *displayWidth = cropRight - cropLeft + 1;
+                *displayHeight = cropBottom - cropTop + 1;
+
+                ALOGD("Video output format changed to %d x %d "
+                     "(crop: %d x %d @ (%d, %d))",
+                     width, height,
+                     *displayWidth,
+                     *displayHeight,
+                     cropLeft, cropTop);
+            }
+        }
+        else
+        {
+            // Use decoder's output info.
+            int32_t cropLeft, cropTop, cropRight, cropBottom;
+            CHECK(outputFormat->findRect(
+                        "crop",
+                        &cropLeft, &cropTop, &cropRight, &cropBottom));
+
+            *displayWidth = cropRight - cropLeft + 1;
+            *displayHeight = cropBottom - cropTop + 1;
+
+            ALOGI("Video output format changed to %d x %d "
+                 "(crop: %d x %d @ (%d, %d))",
+                 width, height,
+                 *displayWidth,
+                 *displayHeight,
+                 cropLeft, cropTop);
+        }
+
+#else
+        // Use decoder's output info.
+        int32_t cropLeft, cropTop, cropRight, cropBottom;
+        CHECK(outputFormat->findRect(
+                    "crop",
+                    &cropLeft, &cropTop, &cropRight, &cropBottom));
+
+        *displayWidth = cropRight - cropLeft + 1;
+        *displayHeight = cropBottom - cropTop + 1;
+
+        ALOGI("Video output format changed to %d x %d "
+             "(crop: %d x %d @ (%d, %d))",
+             width, height,
+             *displayWidth,
+             *displayHeight,
+             cropLeft, cropTop);
+
+#endif // CLEARMOTION
+
+
+}
+
+status_t NuPlayer::setDataSourceAsync_proCheck(sp<AMessage> &msg,sp<AMessage> &notify __unused) {
+
+    mDataSourceType = SOURCE_Local;
+    sp<RefBase> obj;
+       CHECK(msg->findObject("source", &obj));
+    sp<Source> source = static_cast<Source *>(obj.get());
+
+    status_t err = source->initCheck();
+    if(err != OK){
+        notifyListener(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, err);
+        ALOGW("setDataSource source init check fail err=%d",err);
+        source = NULL;
+        msg->setObject("source", source);
+        msg->setInt32("result", err);
+        msg->post();
+        return err;
+    }
+    return OK;
+}
+bool NuPlayer::tyrToChangeDataSourceForLocalSdp() {
+
+    sp<AMessage> format = mSource->getFormat(false);
+
+    if(format.get()){
+        AString newUrl;
+        sp<RefBase> sdp;
+        if(format->findString("rtsp-uri", &newUrl) &&
+            format->findObject("rtsp-sdp", &sdp)) {
+            //is sdp--need re-setDataSource
+                mSource.clear();
+               sp<AMessage> notify = new AMessage(kWhatSourceNotify, this);
+            mSource = new RTSPSource(notify,newUrl.c_str(), NULL, mUIDValid, mUID);
+            static_cast<RTSPSource *>(mSource.get())->setSDP(sdp);
+            ALOGI("replace local sourceto be RTSPSource");
+            return true;
+        }
+    }
+    return false;
+}
+
+
+void NuPlayer::handleForACodecError(bool audio,const sp<AMessage> &codecRequest) {
+#if 0
+    if (!(IsFlushingState(audio ? mFlushingAudio : mFlushingVideo))) {
+        ALOGE("Received error from %s decoder.",audio ? "audio" : "video");
+            int32_t err;
+            CHECK(codecRequest->findInt32("err", &err));
+         notifyListener(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, err);
+    } else {
+        ALOGD("Ignore error from %s decoder when flushing", audio ? "audio" : "video");
+    }
+#endif
+    int32_t err;
+    CHECK(codecRequest->findInt32("err", &err));
+
+    bool isACodecErr = false;
+    if (codecRequest->findInt32("errACodec", &err)) {
+        isACodecErr = true;
+    }
+
+    if (isACodecErr) {         // should only handle ACodec error
+        if (mDataSourceType == SOURCE_Local || mDataSourceType == SOURCE_Http){
+            if (!mIsMtkPlayback) {
+                notifyListener(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, err);
+            } else {
+                // add for ALPS02864569, if ts video or audio decoder not support, anotherpacketsource
+                // will queue a lot of buffers. When the memory received to 500m,
+                // NE will be triggered as it received MediaExtractor memory limit.
+                sp<MetaData> meta = new MetaData;
+                if (audio) {
+                    meta->setInt32(kKeyDecoderError, 1);
+                } else {
+                    meta->setInt32(kKeyDecoderError, 2);
+                }
+                if (mSource != NULL)
+                    mSource->setParams(meta);
+
+                if (!audio) {
+                // ALPS01889948 timing issue, should notify noce
+                // or else would notify frequently, casue binder abnormal
+                    if (!mVideoinfoNotify) {
+                        if (mSource->getFormat(true) != NULL) {
+                            if (false == mAudioinfoNotify) {
+                                notifyListener(MEDIA_SET_VIDEO_SIZE, 0, 0);
+                                notifyListener(MEDIA_INFO, MEDIA_INFO_HAS_UNSUPPORT_VIDEO, 0);
+                            } else {
+                                notifyListener(MEDIA_ERROR, MEDIA_ERROR_TYPE_NOT_SUPPORTED, 0);
+                            }
+                        } else {
+                              notifyListener(MEDIA_ERROR, MEDIA_ERROR_TYPE_NOT_SUPPORTED, 0);
+                        }
+                        mVideoinfoNotify = true;
+                    }
+                } else {
+                    // ALPS01889948 timing issue, should notify noce
+                    // or else would notify frequently, casue binder abnormal
+                    if (!mAudioinfoNotify) {
+                        if (mVideoDecoder != NULL) {
+                            if (false == mVideoinfoNotify) {
+                                notifyListener(MEDIA_INFO, MEDIA_INFO_HAS_UNSUPPORT_AUDIO, 0);
+                            } else {
+                                notifyListener(MEDIA_ERROR, MEDIA_ERROR_TYPE_NOT_SUPPORTED, 0);
+                            }
+                        } else {
+                            notifyListener(MEDIA_ERROR, MEDIA_ERROR_TYPE_NOT_SUPPORTED, 0);
+                        }
+                        mAudioinfoNotify = true;
+                    }
+                }
+            }
+        } else {
+            if(!audio) notifyListener(MEDIA_SET_VIDEO_SIZE, 0, 0);
+            notifyListener(MEDIA_INFO, audio ? MEDIA_INFO_HAS_UNSUPPORT_AUDIO : MEDIA_INFO_HAS_UNSUPPORT_VIDEO, 0);
+        }
+    } else {
+          notifyListener(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, err);
+    }
+}
+
+
+
+void NuPlayer::handleForRenderError1(int32_t finalResult,int32_t audio) {
+
+
+    if (mSource != NULL) {
+        mSource->stopTrack(audio);
+    }
+
+    // mtk80902: ALPS00436989
+    if (audio) {
+        notifyListener(MEDIA_INFO, MEDIA_INFO_HAS_UNSUPPORT_AUDIO, finalResult);
+    } else {
+        notifyListener(MEDIA_SET_VIDEO_SIZE, 0, 0);
+        notifyListener(MEDIA_INFO, MEDIA_INFO_HAS_UNSUPPORT_VIDEO, finalResult);
+    }
+}
+
+sp<MetaData> NuPlayer::getMetaData() const {
+    if(mSource != NULL && mSource.get() != NULL)
+        return mSource->getMetaData();
+    else
+        return NULL;
+}
+
+bool NuPlayer::onScanSources() {
+    ALOGE("onScanSources");
+    mHaveSanSources = true; // for ALPS02318704; when audio decoder config error, suspend/resume video can not play.
+    bool rescan = false;
+    bool hadAnySourcesBefore =
+        (mAudioDecoder != NULL) || (mVideoDecoder != NULL);
+
+    if (mSurface != NULL) {
+#ifdef MTK_CLEARMOTION_SUPPORT
+        if (mEnClearMotion) {
+            sp<ANativeWindow> window = mSurface;
+            if (window != NULL) {
+                window->setSwapInterval(window.get(), 1);
+            }
+        }
+#endif
+        if (instantiateDecoder(false, &mVideoDecoder) == EWOULDBLOCK) {
+            rescan = true;
+        }
+    }
+
+    if (mAudioSink != NULL) {
+        if (instantiateDecoder(true, &mAudioDecoder) == EWOULDBLOCK) {
+            rescan = true;
+        }
+    }
+
+    if (!hadAnySourcesBefore
+            && (mAudioDecoder != NULL || mVideoDecoder != NULL)) {
+        // This is the first time we've found anything playable.
+
+        if (mSourceFlags & Source::FLAG_DYNAMIC_DURATION) {
+            schedulePollDuration();
+        }
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (mIsMtkPlayback && mDataSourceType == SOURCE_Local && mAudioDecoder != NULL && mVideoDecoder == NULL) {
+            ALOGI("mtk playback - listening on duration");
+            // for audio parser(such aac and flac) to notify true duration later
+            schedulePollDuration();
+        }
+#endif
+    }
+
+    status_t err;
+    if ((err = mSource->feedMoreTSData()) != OK) {
+        if (mAudioDecoder == NULL && mVideoDecoder == NULL) {
+            // We're not currently decoding anything (no audio or
+            // video tracks found) and we just ran out of input data.
+
+            if (err == ERROR_END_OF_STREAM) {
+                notifyListener(MEDIA_PLAYBACK_COMPLETE, 0, 0);
+            } else {
+                notifyListener(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, err);
+            }
+        }
+        return false;
+    }
+
+    return rescan;
+}
+
+void NuPlayer::scanSource_l(const sp<AMessage> &msg) {
+    bool needScanAgain = onScanSources();
+    //TODO: to handle audio only file, finisPrepare should be sent
+    if (needScanAgain) {     //scanning source is not completed, continue
+        msg->post(100000ll);
+        mScanSourcesPending = true;
+    } else {
+        if(SOURCE_HttpLive == mDataSourceType) {//decoder may not shutdown after audio/video->audio only stream,can RTSP use the format way?!
+            sp<AMessage> audioFormat = mSource->getFormat(true);
+            sp<AMessage> videoFormat = mSource->getFormat(false);
+            mAudioOnly = videoFormat == NULL;
+            mVideoOnly = audioFormat == NULL;
+            ALOGD("scanning sources done! Audio only=%d, Video only=%d",mAudioOnly,mVideoOnly);
+            if (mAudioOnly) {
+                notifyListener(MEDIA_SET_VIDEO_SIZE, 0,0);
+            }
+
+            if ((videoFormat == NULL) && (audioFormat == NULL)) {
+                ALOGD("notify error to AP when there is no audio and video!");
+                notifyListener(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, 0);
+            }
+        } else {
+            if (mIsMtkPlayback && mVideoDecoder == NULL) {
+                notifyListener(MEDIA_SET_VIDEO_SIZE, 0,0);
+            }
+
+            if ((mVideoDecoder == NULL) && (mAudioDecoder == NULL)) {
+                ALOGD("notify error to AP when there is no audio and video!");
+                notifyListener(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, 0);
+            }
+        }
+    }
+}
+
+void NuPlayer::finishPrepare(int err /*= OK*/) {
+    mPrepare = (err == OK)?PREPARED:UNPREPARED;
+    if (mDriver == NULL)
+        return;
+    sp<NuPlayerDriver> driver = mDriver.promote();
+    if (driver != NULL) {
+        int64_t durationUs;
+        if (mSource != NULL && mSource->getDuration(&durationUs) == OK) {
+            driver->notifyDuration(durationUs);
+        }
+        driver->notifyPrepareCompleted(err);
+        //if (isRTSPSource() && err == OK) {
+        //    notifyListener(MEDIA_INFO, MEDIA_INFO_CHECK_LIVE_STREAMING_COMPLETE, 0);
+        //}
+        ALOGD("complete prepare %s", (err == OK)?"success":"fail");
+
+        ATRACE_ASYNC_END("Prepare",mPlayerCnt);
+
+        sp<MetaData> fileMeta = mSource->getFileFormatMeta();
+      int32_t hasUnsupportVideo = 0;
+        if (fileMeta != NULL && fileMeta->findInt32(kKeyHasUnsupportVideo, &hasUnsupportVideo)
+                && hasUnsupportVideo != 0) {
+            notifyListener(MEDIA_SET_VIDEO_SIZE, 0, 0);
+            notifyListener(MEDIA_INFO, MEDIA_INFO_HAS_UNSUPPORT_VIDEO, 0);
+            ALOGD("Notify APP that file has kKeyHasUnsupportVideo");
+        }
+    }
+}
+
+
+void NuPlayer::reviseNotifyErrorCode(int msg,int *ext1,int *ext2) {
+    if (mIsMtkPlayback && mSource != NULL && ((mDataSourceType == SOURCE_Http) && (msg == MEDIA_ERROR || msg == MEDIA_PLAY_COMPLETE ||
+        *ext1 == MEDIA_INFO_HAS_UNSUPPORT_AUDIO || *ext1 == MEDIA_INFO_HAS_UNSUPPORT_VIDEO))) {
+        status_t cache_stat = mSource->getFinalStatus();
+        bool bCacheSuccess = (cache_stat == OK || cache_stat == ERROR_END_OF_STREAM);
+
+        if (!bCacheSuccess) {
+            ALOGI(" http error");
+            if (cache_stat == -ECANCELED) {
+                ALOGD("this error triggered by user's stopping, would not report");
+                return;
+            } else if (cache_stat == ERROR_FORBIDDEN) {
+                *ext1 = MEDIA_ERROR_INVALID_CONNECTION;//httpstatus = 403
+            } else if (cache_stat == ERROR_POOR_INTERLACE) {
+                *ext1 = MEDIA_ERROR_NOT_VALID_FOR_PROGRESSIVE_PLAYBACK;
+            } else {
+                *ext1 = MEDIA_ERROR_CANNOT_CONNECT_TO_SERVER;
+            }
+            *ext2 = cache_stat;
+            ALOGE("report 'cannot connect' to app, cache_stat = %d", cache_stat);
+            if (MEDIA_PLAY_COMPLETE == msg) {
+                ALOGD("Http Error and end of stream");
+                msg = MEDIA_ERROR;
+            }
+        }
+    }
+
+    //try to report a more meaningful error
+    if (msg == MEDIA_ERROR && *ext1 == MEDIA_ERROR_UNKNOWN) {
+        switch(*ext2) {
+            case ERROR_MALFORMED:
+                *ext1 = MEDIA_ERROR_BAD_FILE;
+                break;
+            case ERROR_CANNOT_CONNECT:
+                *ext1 = MEDIA_ERROR_CANNOT_CONNECT_TO_SERVER;
+                break;
+            case ERROR_UNSUPPORTED:
+                *ext1 = MEDIA_ERROR_TYPE_NOT_SUPPORTED;
+                break;
+            case ERROR_FORBIDDEN:
+                *ext1 = MEDIA_ERROR_INVALID_CONNECTION;
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+void NuPlayer::performSeek_l(int64_t seekTimeUs) {
+
+    CHECK(seekTimeUs != -1);
+    Mutex::Autolock autoLock(mLock);
+
+    mAudioEOS = false;
+    mVideoEOS = false;
+    ALOGI("reset EOS flag");
+
+    mPreviousSeekTimeUs = seekTimeUs;
+    status_t err = mSource->seekTo(seekTimeUs);
+    // finish seek when receive Source::kWhatSeekDone
+    if (err == -EWOULDBLOCK) {
+        ALOGD("seek async, waiting Source seek done mSeekWouldBlock is set to true");
+    }
+}
+
+void NuPlayer::onSourcePrepard(int32_t err) {
+    //if file is rtsp local sdp file, check file uses GenericSource, here check source, need to change to RTSPSource
+    if(tyrToChangeDataSourceForLocalSdp()){
+        mPrepare = UNPREPARED;
+        ALOGI("to do prepare again and change mDataSourceType");
+        mDataSourceType = SOURCE_Rtsp;
+        prepareAsync();
+        return;
+   }
+
+
+    if (mPrepare == PREPARED) //TODO: this would would happen when MyHandler disconnect
+        return;
+    if (err != OK) {
+        finishPrepare(err);
+        return;
+    } else if (mSource == NULL) {  // ALPS00779817
+        ALOGW("prepare error: source is not ready");
+        finishPrepare(UNKNOWN_ERROR);
+        return;
+    }
+    // if data source is streamingsource or local, the scan will be started in kWhatStart
+    finishPrepare();
+}
+
+void NuPlayer::onSourceNotify_l(const sp<AMessage> &msg) {
+    int32_t what;
+    CHECK(msg->findInt32("what", &what));
+    if(what == Source::kWhatBufferNotify) {
+        int32_t rate;
+        CHECK(msg->findInt32("bufRate", &rate));
+      if(rate % 10 == 0){
+         ALOGD("mFlags %d; buffering rate %d",mFlags, rate);
+      }
+      notifyListener(MEDIA_BUFFERING_UPDATE, rate, 0);
+    }
+    else if(what == Source::kWhatSeekDone) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        MM_LOGI("mSourceSeekDone:%d", mSourceSeekDone);
+        if (mDataSourceType == SOURCE_Http && !mSourceSeekDone) {
+            mSourceSeekDone = true;
+            if (mDriver != NULL) {
+                sp<NuPlayerDriver> driver = mDriver.promote();
+                if (driver != NULL) {
+                    driver->notifySeekComplete();
+                }
+            }
+        }
+#endif
+    }
+    else if(what == NuPlayer::Source::kWhatPicture) {
+        // audio-only stream containing picture for display
+        ALOGI("Notify picture existence");
+        notifyListener(MEDIA_INFO, MEDIA_INFO_METADATA_UPDATE, 0);
+    }
+}
+
+
+
+// static
+bool NuPlayer::IsFlushingState(FlushStatus state) {
+    switch (state) {
+        case FLUSHING_DECODER:
+            return true;
+
+        case FLUSHING_DECODER_SHUTDOWN:
+        case SHUTTING_DOWN_DECODER:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+bool NuPlayer::isRTSPSource() {
+    if (mDataSourceType == (DataSourceType)NuPlayer::Source::SOURCE_Default && mSource != NULL) {
+        mDataSourceType = (DataSourceType)mSource->getDataSourceType();
+    }
+
+    return NuPlayer::Source::SOURCE_Rtsp == (NuPlayer::Source::DataSourceType)mDataSourceType;
+}
+bool NuPlayer::isHttpLiveSource() {
+    if (mDataSourceType == (DataSourceType)NuPlayer::Source::SOURCE_Default && mSource != NULL) {
+        mDataSourceType = (DataSourceType)mSource->getDataSourceType();
+    }
+    ALOGD("rock, isHttpLiveSource datatype %d", mDataSourceType);
+    return NuPlayer::Source::SOURCE_HttpLive == (NuPlayer::Source::DataSourceType)mDataSourceType;
+}
+
+#ifdef MTK_DRM_APP
+void NuPlayer::setDRMClientInfo(const Parcel *request) {
+    if ((mDataSourceType == SOURCE_Local || mDataSourceType == SOURCE_Http) && mSource != NULL) {
+        (static_cast<GenericSource *>(mSource.get()))->setDRMClientInfo(request);
+    }
+}
+#endif
+#ifdef MTK_SLOW_MOTION_VIDEO_SUPPORT
+status_t NuPlayer::setsmspeed(int32_t speed){
+    mslowmotion_speed = speed;
+    if(mVideoDecoder != NULL){
+        sp<AMessage> msg = new AMessage;
+        msg->setInt32("slowmotion-speed", speed);
+        mVideoDecoder->setParameters(msg);
+    }else{
+        ALOGW("mVideoDecoder == NULL");
+    }
+    if(mRenderer != NULL){
+        return mRenderer->setsmspeed(speed);
+    }else{
+        ALOGW("mRenderer = NULL");
+        return NO_INIT;
+    }
+}
+
+status_t NuPlayer::setslowmotionsection(int64_t slowmotion_start,int64_t slowmotion_end){
+    mslowmotion_start = slowmotion_start;
+    mslowmotion_end = slowmotion_end;
+    if(mVideoDecoder != NULL){
+        sp<AMessage> msg = new AMessage;
+        msg->setInt64("slowmotion-start", slowmotion_start);
+        msg->setInt64("slowmotion-end", slowmotion_end);
+        msg->setInt32("slowmotion-speed", mslowmotion_speed);
+        mVideoDecoder->setParameters(msg);
+        return OK;
+    }else {
+        ALOGW("mVideoDecoder = NULL");
+        return NO_INIT;
+    }
+}
+
+sp<MetaData> NuPlayer::getFormatMeta(bool audio)const {
+    if(mSource != NULL){
+        return mSource->getFormatMeta(audio);
+    }else{
+        return NULL;
+    }
+}
+#endif
+
+#ifdef MTK_CLEARMOTION_SUPPORT
+void NuPlayer::enableClearMotion(int32_t enable) {
+    mEnClearMotion = enable;
+}
+void NuPlayer::enableClearMotionDemo(int32_t enable) {
+    mEnClearMotionDemo = enable;
+}
+#endif
+
+void NuPlayer::setIsMtkPlayback(bool setting) {
+    ALOGI("Is Mtk playback:%d", setting);
+    mIsMtkPlayback = setting;
+}
+
+
+#endif
 
 }  // namespace android

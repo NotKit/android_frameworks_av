@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2014, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -46,6 +51,13 @@ const int32_t kDefaultVideoEncoderDataSpace = HAL_DATASPACE_V0_BT709;
 
 const int kStopTimeoutUs = 300000; // allow 1 sec for shutting down encoder
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef CONFIG_MT_ENG_BUILD
+static uint32_t kQueuedBufferMax = 100;  // default queue about 1s datas before drop frames
+static uint32_t kDropCountOnce = 30;
+#endif
+#endif
+
 struct MediaCodecSource::Puller : public AHandler {
     Puller(const sp<MediaSource> &source);
 
@@ -57,6 +69,9 @@ struct MediaCodecSource::Puller : public AHandler {
     void resume();
 
     bool readBuffer(MediaBuffer **buffer);
+#ifdef MTK_AOSP_ENHANCEMENT
+    void setIsMPEG4() {mIsMPEG4 = true;}
+#endif
 
 protected:
     virtual void onMessageReceived(const sp<AMessage> &msg);
@@ -73,6 +88,9 @@ private:
     sp<AMessage> mNotify;
     sp<ALooper> mLooper;
     bool mIsAudio;
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool mIsMPEG4;
+#endif
 
     struct Queue {
         Queue()
@@ -104,6 +122,9 @@ MediaCodecSource::Puller::Puller(const sp<MediaSource> &source)
     : mSource(source),
       mLooper(new ALooper()),
       mIsAudio(false)
+#ifdef MTK_AOSP_ENHANCEMENT
+      ,mIsMPEG4(false)
+#endif
 {
     sp<MetaData> meta = source->getFormat();
     const char *mime;
@@ -121,6 +142,19 @@ MediaCodecSource::Puller::~Puller() {
 
 void MediaCodecSource::Puller::Queue::pushBuffer(MediaBuffer *mbuf) {
     mReadBuffers.push_back(mbuf);
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef CONFIG_MT_ENG_BUILD
+    if (mReadBuffers.size() > kQueuedBufferMax + kDropCountOnce) {
+        ALOGW("Queued buffers(%zu) > %u, dropped frames!!", mReadBuffers.size(), kQueuedBufferMax + kDropCountOnce);
+        MediaBuffer *mbuffer;
+        while (mReadBuffers.size() > kQueuedBufferMax) {
+            if (readBuffer(&mbuffer)) {
+                mbuffer->release();
+            }
+        }
+    }
+#endif
+#endif
 }
 
 bool MediaCodecSource::Puller::Queue::readBuffer(MediaBuffer **mbuf) {
@@ -134,6 +168,7 @@ bool MediaCodecSource::Puller::Queue::readBuffer(MediaBuffer **mbuf) {
 }
 
 void MediaCodecSource::Puller::Queue::flush() {
+    ALOGD("queued buffers when stop(%zu)", mReadBuffers.size());
     MediaBuffer *mbuf;
     while (readBuffer(&mbuf)) {
         // there are no null buffers in the queue
@@ -195,7 +230,14 @@ void MediaCodecSource::Puller::stop() {
 void MediaCodecSource::Puller::interruptSource() {
     // call source->stop if read has been pending for over a second
     // We have to call this outside the looper as looper is pending on the read.
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (!mIsMPEG4) {
+        ALOGW("interruptSource: stop source except MPEG4 encoder!");
+        mSource->stop();
+    }
+#else
     mSource->stop();
+#endif
 }
 
 void MediaCodecSource::Puller::stopSource() {
@@ -218,7 +260,11 @@ void MediaCodecSource::Puller::schedulePull() {
 }
 
 void MediaCodecSource::Puller::handleEOS() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("puller (%s) posting EOS", mIsAudio ? "audio" : "video");
+#else
     ALOGV("puller (%s) posting EOS", mIsAudio ? "audio" : "video");
+#endif
     sp<AMessage> msg = mNotify->dup();
     msg->setInt32("eos", 1);
     msg->post();
@@ -286,6 +332,15 @@ void MediaCodecSource::Puller::onMessageReceived(const sp<AMessage> &msg) {
                     mbuf = NULL;
                 }
                 if (queue->mPulling && err == OK) {
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef CONFIG_MT_ENG_BUILD
+                   // add for avoid data before pause been send to encoder after resume
+                    MediaBuffer *mbuffer;
+                    while (queue->readBuffer(&mbuffer)) {
+                        mbuffer->release();
+                    }
+#endif
+#endif
                     msg->post(); // if simply paused, keep pulling source
                     break;
                 } else if (err == ERROR_END_OF_STREAM) {
@@ -423,6 +478,10 @@ MediaCodecSource::MediaCodecSource(
       mPausePending(false),
       mFirstSampleTimeUs(-1ll),
       mGeneration(0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    mLastTimeUs = 0ll;
+    mFrameDropped = false;
+#endif
     CHECK(mLooper != NULL);
 
     AString mime;
@@ -435,6 +494,13 @@ MediaCodecSource::MediaCodecSource(
     if (!(mFlags & FLAG_USE_SURFACE_INPUT)) {
         mPuller = new Puller(source);
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mPuller != NULL && mOutputFormat->findString("mime", &mime)
+        && (!strncasecmp("video/mp4v-es", mime.c_str(), 13))) {
+        ALOGW("MPEG4 encoder!");
+        mPuller->setIsMPEG4();
+    }
+#endif
 }
 
 MediaCodecSource::~MediaCodecSource() {
@@ -483,6 +549,14 @@ status_t MediaCodecSource::initEncoder() {
         if (mEncoder == NULL) {
             continue;
         }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        // 20150813 Marcus Huang:
+        // "recorder" is set to ACodec::setupAVCEncoderParameters().
+        //  It's necessary to be set; otherwise, in Google's original code, the profile of AVC encoder is
+        //  forced to be baseline.
+        mOutputFormat->setInt32("recorder", 1);
+#endif
 
         ALOGV("output format is '%s'", mOutputFormat->debugString(0).c_str());
 
@@ -656,6 +730,9 @@ status_t MediaCodecSource::feedEncoderInputBuffers() {
         int64_t timeUs = 0ll;
         uint32_t flags = 0;
         size_t size = 0;
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_SLOW_MOTION_VIDEO_SUPPORT)
+        int32_t IsCodecConfig = 0;
+#endif
 
         if (mbuf != NULL) {
             CHECK(mbuf->meta_data()->findInt64(kKeyTime, &timeUs));
@@ -671,9 +748,20 @@ status_t MediaCodecSource::feedEncoderInputBuffers() {
             }
 
             timeUs += mInputBufferTimeOffsetUs;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (timeUs <= mLastTimeUs) {//add for avoid timeUs back when resume after pause.
+                ALOGW("%s mLastTimeUs(%lld us)> timeUs(%lld us),release buffer!!!",
+                        mIsVideo ? "video" : "audio", (long long)mLastTimeUs, (long long)timeUs);
+                mbuf->release();
+                mAvailEncoderInputIndices.push_back(bufferIndex);  // available input buffer not use, push back
+                continue;
+            }
+#endif
             // push decoding time for video, or drift time for audio
             if (mIsVideo) {
+#if defined(MTK_AOSP_ENHANCEMENT) && defined(MTK_SLOW_MOTION_VIDEO_SUPPORT)//when directlink, not push the first config time in mDecodingTimeQueue
+                if(!mbuf->meta_data()->findInt32(kKeyIsCodecConfig, &IsCodecConfig) || !IsCodecConfig)
+#endif
                 mDecodingTimeQueue.push_back(timeUs);
             } else {
 #if DEBUG_DRIFT_TIME
@@ -714,7 +802,9 @@ status_t MediaCodecSource::feedEncoderInputBuffers() {
 
         status_t err = mEncoder->queueInputBuffer(
                 bufferIndex, 0, size, timeUs, flags);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        mLastTimeUs = timeUs;
+#endif
         if (err != OK) {
             return err;
         }
@@ -796,7 +886,11 @@ void MediaCodecSource::onMessageReceived(const sp<AMessage> &msg) {
     {
         int32_t eos = 0;
         if (msg->findInt32("eos", &eos) && eos) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGD("puller (%s) reached EOS", mIsVideo ? "video" : "audio");
+#else
             ALOGV("puller (%s) reached EOS", mIsVideo ? "video" : "audio");
+#endif
             signalEOS();
             break;
         }
@@ -879,6 +973,27 @@ void MediaCodecSource::onMessageReceived(const sp<AMessage> &msg) {
                         // GraphicBufferSource is supposed to discard samples
                         // queued before start, and offset timeUs by start time
                         CHECK_GE(timeUs, 0ll);
+#ifdef MTK_AOSP_ENHANCEMENT
+                        if (timeUs <= mLastTimeUs) {  // add for avoid timeUs back when resume after pause.
+                            ALOGW("video mLastTimeUs(%lld us)> timeUs(%lld us),release buffer!!!",
+                                    (long long)mLastTimeUs, (long long)timeUs);
+                            mbuf->release();
+                            mFrameDropped = true;
+                            mEncoder->requestIDRFrame();
+                            break;
+                        } else {
+                            int32_t isSync = false;
+                            if (flags & MediaCodec::BUFFER_FLAG_SYNCFRAME) {
+                                isSync = true;
+                            }
+                            if (mFrameDropped && !isSync) {
+                                ALOGD("Wait IDR frame after droped video frames");
+                                mbuf->release();
+                                break;
+                            }
+                            mFrameDropped = false;
+                        }
+#endif
                         // TODO:
                         // Decoding time for surface source is unavailable,
                         // use presentation time for now. May need to move
@@ -905,12 +1020,22 @@ void MediaCodecSource::onMessageReceived(const sp<AMessage> &msg) {
                             timeUs, timeUs / 1E6, driftTimeUs);
                 }
                 mbuf->meta_data()->setInt64(kKeyTime, timeUs);
+#ifdef MTK_AOSP_ENHANCEMENT
+                if (mFlags & FLAG_USE_SURFACE_INPUT) {
+                    mLastTimeUs = timeUs;
+                }
+#endif
             } else {
                 mbuf->meta_data()->setInt32(kKeyIsCodecConfig, true);
             }
             if (flags & MediaCodec::BUFFER_FLAG_SYNCFRAME) {
                 mbuf->meta_data()->setInt32(kKeyIsSyncFrame, true);
             }
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (flags & MediaCodec::BUFFER_FLAG_MULTISLICE) {
+                mbuf->meta_data()->setInt32(KKeyMultiSliceBS, true);
+            }
+#endif
             memcpy(mbuf->data(), outbuf->data(), outbuf->size());
 
             {
@@ -1015,6 +1140,9 @@ void MediaCodecSource::onMessageReceived(const sp<AMessage> &msg) {
         CHECK(msg->senderAwaitsResponse(&replyID));
         status_t err = OK;
         CHECK(msg->findInt64("time-offset-us", &mInputBufferTimeOffsetUs));
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("mInputBufferTimeOffsetUs = %lld us", (long long)mInputBufferTimeOffsetUs);
+#endif
 
         // Propagate the timestamp offset to GraphicBufferSource.
         if (mIsVideo) {

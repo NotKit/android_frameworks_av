@@ -16,6 +16,13 @@
 
 #define LOG_TAG "APM::ConfigParsingUtils"
 //#define LOG_NDEBUG 0
+#ifdef MTK_AUDIO
+#define LOG_NDEBUG 0
+#include "audio_custom_exp.h"
+#ifndef USE_REFMIC_IN_LOUDSPK
+#define USE_REFMIC_IN_LOUDSPK 0
+#endif
+#endif
 
 #include "ConfigParsingUtils.h"
 #include <convert/convert.h>
@@ -170,6 +177,15 @@ status_t ConfigParsingUtils::loadHwModuleProfile(cnode *root, sp<HwModule> &modu
                    strcmp(node->value, DYNAMIC_VALUE_TAG) != 0) {
             if (role == AUDIO_PORT_ROLE_SINK) {
                 channels = inputChannelMasksFromString(node->value);
+#if MTK_AUDIO
+                // If the supported channel mask contain AUDIO_CHANNEL_IN_VOICE_UPLINK & AUDIO_CHANNEL_IN_VOICE_DNLINK
+                // We add AUDIO_CHANNEL_IN_VOICE_UPLINK|AUDIO_CHANNEL_IN_VOICE_DNLINK channel mask to supported channel mask list
+                if (channels.indexOf(AUDIO_CHANNEL_IN_VOICE_UPLINK) >= 0
+                    && channels.indexOf(AUDIO_CHANNEL_IN_VOICE_DNLINK) >= 0
+                    && channels.indexOf(AUDIO_CHANNEL_IN_VOICE_UPLINK | AUDIO_CHANNEL_IN_VOICE_DNLINK) < 0) {
+                    channels.add(AUDIO_CHANNEL_IN_VOICE_UPLINK | AUDIO_CHANNEL_IN_VOICE_DNLINK);
+                }
+#endif
             } else {
                 channels = outputChannelMasksFromString(node->value);
             }
@@ -240,6 +256,16 @@ status_t ConfigParsingUtils::loadHwModule(cnode *root, sp<HwModule> &module,
     if (node != NULL) {
         node = node->first_child;
         while (node) {
+#ifdef MTK_AUDIO
+            if (strcmp(node->name, COMPRESS_OFFLOAD_TAG) == 0) {
+                if (strcmp(root->name, MODULE_A2DP_TAG) == 0) {
+                    ALOGV("loadHwModule() skip loading a2dp offload  output %s", root->name);
+                    node = node->next;
+                    continue;
+                }
+            }
+#endif
+
             ALOGV("loadHwModule() loading output %s", node->name);
             status_t tmpStatus = loadHwModuleProfile(node, module, AUDIO_PORT_ROLE_SOURCE);
             if (status == NAME_NOT_FOUND || status == NO_ERROR) {
@@ -300,6 +326,12 @@ void ConfigParsingUtils::loadDevicesFromTag(const char *tag, DeviceVector &devic
                   audio_devices_t singleType =
                         inBit | (1 << (31 - __builtin_clz(type)));
                     type &= ~singleType;
+#if defined(MTK_AUDIO) && defined(DISABLE_EARPIECE)
+                    if (singleType == AUDIO_DEVICE_OUT_EARPIECE) {
+                        ALOGD("loadDevicesFromTag skip AUDIO_DEVICE_OUT_EARPIECE");
+                        continue;
+                    }
+#endif
                     sp<DeviceDescriptor> dev = new DeviceDescriptor(singleType);
                     devices.add(dev);
                 }
@@ -335,12 +367,24 @@ void ConfigParsingUtils::loadModuleGlobalConfig(cnode *root, const sp<HwModule> 
         if (strcmp(ATTACHED_OUTPUT_DEVICES_TAG, node->name) == 0) {
             DeviceVector availableOutputDevices;
             loadDevicesFromTag(node->value, availableOutputDevices, declaredDevices);
+#if defined(MTK_AUDIO) && defined(FM_DIGITAL_OUT_SUPPORT)
+            sp<DeviceDescriptor> dev = new DeviceDescriptor(AUDIO_DEVICE_OUT_FM);
+            availableOutputDevices.add(dev);
+            ALOGD("Auto attatch AUDIO_DEVICE_OUT_FM,Attached Output Devices %08x",availableOutputDevices.types());
+#endif
             ALOGV("loadGlobalConfig() Attached Output Devices %08x",
                   availableOutputDevices.types());
             config.addAvailableOutputDevices(availableOutputDevices);
         } else if (strcmp(DEFAULT_OUTPUT_DEVICE_TAG, node->name) == 0) {
             audio_devices_t device = AUDIO_DEVICE_NONE;
             DeviceConverter::fromString(node->value, device);
+#if defined(MTK_AUDIO) && defined(DISABLE_EARPIECE)
+            if (device == AUDIO_DEVICE_OUT_EARPIECE) {
+                ALOGW("loadModuleGlobalConfig() default device not support AUDIO_DEVICE_OUT_EARPIECE");
+                node = node->next;
+                continue;
+            }
+#endif
             if (device != AUDIO_DEVICE_NONE) {
                 sp<DeviceDescriptor> defaultOutputDevice = new DeviceDescriptor(device);
                 config.setDefaultOutputDevice(defaultOutputDevice);
@@ -351,6 +395,15 @@ void ConfigParsingUtils::loadModuleGlobalConfig(cnode *root, const sp<HwModule> 
         } else if (strcmp(ATTACHED_INPUT_DEVICES_TAG, node->name) == 0) {
             DeviceVector availableInputDevices;
             loadDevicesFromTag(node->value, availableInputDevices, declaredDevices);
+#ifdef MTK_AUDIO
+#if (USE_REFMIC_IN_LOUDSPK == 1)
+            if (!(AUDIO_DEVICE_IN_BACK_MIC & availableInputDevices.types() &
+                    ~AUDIO_DEVICE_BIT_IN)) {
+                 sp<DeviceDescriptor> dev = new DeviceDescriptor(AUDIO_DEVICE_IN_BACK_MIC);
+                 availableInputDevices.add(dev);
+            }
+#endif
+#endif
             ALOGV("loadGlobalConfig() Available InputDevices %08x", availableInputDevices.types());
             config.addAvailableInputDevices(availableInputDevices);
         } else if (strcmp(AUDIO_HAL_VERSION_TAG, node->name) == 0) {

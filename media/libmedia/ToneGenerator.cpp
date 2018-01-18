@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +19,7 @@
  * limitations under the License.
  */
 
-//#define LOG_NDEBUG 0
+#define LOG_NDEBUG 0
 #define LOG_TAG "ToneGenerator"
 
 #include <math.h>
@@ -25,6 +30,10 @@
 
 namespace android {
 
+#ifdef MTK_AOSP_ENHANCEMENT
+uint32_t kMaxSampleRate = (1 << sizeof(unsigned short)*8) - 1 ;
+uint32_t kDefaultSampleRate = 44100;
+#endif
 
 // Descriptors for all available tones (See ToneGenerator::ToneDescriptor class declaration for details)
 const ToneGenerator::ToneDescriptor ToneGenerator::sToneDescriptors[] = {
@@ -845,6 +854,14 @@ const unsigned char /*tone_type*/ ToneGenerator::sToneMappingTable[NUM_REGIONS-1
 ToneGenerator::ToneGenerator(audio_stream_type_t streamType, float volume, bool threadCanCallJava) {
 
     ALOGV("ToneGenerator constructor: streamType=%d, volume=%f", streamType, volume);
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("ToneGenerator constructor: streamType=%d, volume=%f", streamType, volume);
+#ifdef VOLUME_NEWMAP
+    volume = AudioSystem::logToLinear ( volume);
+    volume = volume * 256.0/100.0;
+    volume = AudioSystem::linearToLog ( volume);
+#endif
+#endif
 
     mState = TONE_IDLE;
 
@@ -852,6 +869,12 @@ ToneGenerator::ToneGenerator(audio_stream_type_t streamType, float volume, bool 
         ALOGE("Unable to marshal AudioFlinger");
         return;
     }
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (mSamplingRate > kMaxSampleRate) {
+        ALOGD("mSamplingRate:%d > kMaxSampleRate:%d,set mSamplingRate to kDefaultSampleRate",mSamplingRate,kMaxSampleRate);
+        mSamplingRate = kDefaultSampleRate;
+    }
+#endif
     mThreadCanCallJava = threadCanCallJava;
     mStreamType = streamType;
     mVolume = volume;
@@ -903,7 +926,9 @@ ToneGenerator::ToneGenerator(audio_stream_type_t streamType, float volume, bool 
 ////////////////////////////////////////////////////////////////////////////////
 ToneGenerator::~ToneGenerator() {
     ALOGV("ToneGenerator destructor");
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("ToneGenerator destructor\n");
+#endif
     if (mpAudioTrack != 0) {
         stopTone();
         ALOGV("Delete Track: %p", mpAudioTrack.get());
@@ -948,7 +973,9 @@ bool ToneGenerator::startTone(tone_type toneType, int durationMs) {
     }
 
     ALOGV("startTone");
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("startTone\n");
+#endif
     mLock.lock();
 
     // Get descriptor for requested tone
@@ -1009,6 +1036,9 @@ bool ToneGenerator::startTone(tone_type toneType, int durationMs) {
 
     ALOGV_IF(lResult, "Tone started, time %d", (unsigned int)(systemTime()/1000000));
     ALOGW_IF(!lResult, "Tone start failed!!!, time %d", (unsigned int)(systemTime()/1000000));
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("startTone done\n");
+#endif
 
     return lResult;
 }
@@ -1028,6 +1058,9 @@ bool ToneGenerator::startTone(tone_type toneType, int durationMs) {
 ////////////////////////////////////////////////////////////////////////////////
 void ToneGenerator::stopTone() {
     ALOGV("stopTone");
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("stopTone");
+#endif
 
     mLock.lock();
     if (mState != TONE_IDLE && mState != TONE_INIT) {
@@ -1074,6 +1107,9 @@ void ToneGenerator::stopTone() {
     }
 
     mLock.unlock();
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("stopTone done");
+#endif
 }
 
 //---------------------------------- private methods ---------------------------
@@ -1102,7 +1138,11 @@ bool ToneGenerator::initAudioTrack() {
     const size_t frameCount = mProcessSize;
     status_t status = mpAudioTrack->set(
             mStreamType,
+#ifndef MTK_AOSP_ENHANCEMENT
             0,    // sampleRate
+#else
+            mSamplingRate,
+#endif
             AUDIO_FORMAT_PCM_16_BIT,
             AUDIO_CHANNEL_OUT_MONO,
             frameCount,
@@ -1223,8 +1263,15 @@ void ToneGenerator::audioCallback(int event, void* user, void *info) {
                 unsigned short lFrequency = lpToneDesc->segments[lpToneGen->mCurSegment].waveFreq[lFreqIdx];
 
                 while (lFrequency != 0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                    if(lpToneGen->mWaveGens.size() > 0)
+                    {
+#endif
                     WaveGenerator *lpWaveGen = lpToneGen->mWaveGens.valueFor(lFrequency);
                     lpWaveGen->getSamples(lpOut, lGenSmp, lWaveCmd);
+#ifdef MTK_AOSP_ENHANCEMENT
+                    }
+#endif
                     lFrequency = lpToneDesc->segments[lpToneGen->mCurSegment].waveFreq[++lFreqIdx];
                 }
                 ALOGV("ON->OFF, lGenSmp: %d, lReqSmp: %d", lGenSmp, lReqSmp);
@@ -1269,17 +1316,19 @@ void ToneGenerator::audioCallback(int event, void* user, void *info) {
                     if (lpToneDesc->segments[lpToneDesc->repeatSegment].waveFreq[0] != 0) {
                         lWaveCmd = WaveGenerator::WAVEGEN_START;
                     }
-
+#ifndef MTK_AOSP_ENHANCEMENT
                     ALOGV("New segment %d, Next Time: %d", lpToneGen->mCurSegment,
                             (lpToneGen->mNextSegSmp*1000)/lpToneGen->mSamplingRate);
-
+#endif
                 } else {
                     lGenSmp = 0;
                     ALOGV("End repeat, time: %d", (unsigned int)(systemTime()/1000000));
                 }
             } else {
+#ifndef MTK_AOSP_ENHANCEMENT
                 ALOGV("New segment %d, Next Time: %d", lpToneGen->mCurSegment,
                         (lpToneGen->mNextSegSmp*1000)/lpToneGen->mSamplingRate);
+#endif
                 if (lpToneDesc->segments[lpToneGen->mCurSegment].waveFreq[0] != 0) {
                     // If next segment is not silent,  OFF -> ON transition : reset wave generator
                     lWaveCmd = WaveGenerator::WAVEGEN_START;
@@ -1309,8 +1358,15 @@ void ToneGenerator::audioCallback(int event, void* user, void *info) {
             unsigned short lFrequency = lpToneDesc->segments[lpToneGen->mCurSegment].waveFreq[lFreqIdx];
 
             while (lFrequency != 0) {
-                WaveGenerator *lpWaveGen = lpToneGen->mWaveGens.valueFor(lFrequency);
-                lpWaveGen->getSamples(lpOut, lGenSmp, lWaveCmd);
+#ifdef MTK_AOSP_ENHANCEMENT
+               if(lpToneGen->mWaveGens.size() > 0)
+               {
+#endif
+                  WaveGenerator *lpWaveGen = lpToneGen->mWaveGens.valueFor(lFrequency);
+                  lpWaveGen->getSamples(lpOut, lGenSmp, lWaveCmd);
+#ifdef MTK_AOSP_ENHANCEMENT
+               }
+#endif
                 lFrequency = lpToneDesc->segments[lpToneGen->mCurSegment].waveFreq[++lFreqIdx];
             }
         }

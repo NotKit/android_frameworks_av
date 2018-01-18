@@ -31,6 +31,7 @@ LOCAL_C_INCLUDES := \
 	frameworks/av/media/libstagefright/include \
 	$(TOP)/frameworks/native/include/media/openmax \
 	$(TOP)/frameworks/native/include/media/hardware \
+    $(TOP)/$(MTK_ROOT)/frameworks-ext/native/include
 
 LOCAL_CFLAGS += -Werror -Wall
 LOCAL_CLANG := true

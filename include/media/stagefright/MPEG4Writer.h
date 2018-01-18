@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,7 +30,25 @@
 #include <utils/List.h>
 #include <utils/threads.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <utils/String8.h>
+#include <media/stagefright/MediaBuffer.h>
+#endif
+
 namespace android {
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#define USE_FILE_CACHE
+#define SD_FULL_PROTECT
+#define LOW_MEM_PROTECT_THRESHOLD   70*1024*1024LL
+#define CHECK_LOW_MEM_BY_MEM_FREE
+
+//make the method to record the  start time offset of two tracks optional
+//#define WRITER_ENABLE_EDTS_BOX
+#ifdef USE_FILE_CACHE
+class MPEG4FileCacheWriter;
+#endif
+#endif
 
 class AMessage;
 class MediaBuffer;
@@ -119,12 +142,22 @@ private:
         Track               *mTrack;        // Owner
         int64_t             mTimeStampUs;   // Timestamp of the 1st sample
         List<MediaBuffer *> mSamples;       // Sample data
+#ifdef MTK_AOSP_ENHANCEMENT
+        int64_t             mDataSize;
+#endif
 
         // Convenient constructor
         Chunk(): mTrack(NULL), mTimeStampUs(0) {}
 
         Chunk(Track *track, int64_t timeUs, List<MediaBuffer *> samples)
             : mTrack(track), mTimeStampUs(timeUs), mSamples(samples) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            mDataSize = 0;
+
+            for (List<MediaBuffer *>::iterator it = mSamples.begin(); it != mSamples.end(); it++) {
+                mDataSize += (*it)->range_length();
+            }
+#endif
         }
 
     };
@@ -217,6 +250,114 @@ private:
 
     MPEG4Writer(const MPEG4Writer &);
     MPEG4Writer &operator=(const MPEG4Writer &);
+#ifdef MTK_AOSP_ENHANCEMENT
+public:
+    int64_t     getMaxDurationUs();
+    void        writeMetaData();
+    int64_t     getPausedDuration();
+    void        setPausedDuration(int64_t paudedDurationUs);
+    void        setAudioTrackResumed();
+    void        setVideoTrackResumed();
+    void        signalResumed();
+
+#ifdef SD_FULL_PROTECT
+    void        setSDFull() { mIsSDFull = true; }
+    bool        isSDFull() { return mIsSDFull; }
+    void        processSDFull();
+    void        finishHandleSDFull();
+    status_t    getTrackResetStatus(){ return mTrackResetStatus; }// add for check track reset status ok or err
+                                                                  // if err do not write moov
+#endif
+
+#ifdef WRITER_ENABLE_EDTS_BOX
+    //make the method to record the  start time offset of two tracks optional
+    void        EnableEdtsBoxForTimeOffset(bool enable) { mEnableEdtsBoxForTimeOffset = enable;}
+    bool        isEnableEdtsBoxForTimeOffset() {return mEnableEdtsBoxForTimeOffset;}
+#endif
+
+    //for EIS2.5
+    void        setEIS(int64_t *value) { mEISQueueFrames = *value; }
+    int64_t     getEIS() { return mEISQueueFrames; }
+    void        setEISStop() { mIsEISStop = true; }
+    bool        getEISStop() { return mIsEISStop; }
+
+    //for vsdof
+    void        setAudioStopFirst() { mAudioStopFirst = true; }
+
+private:
+    void        init();
+    void        releaseEx();  // release in ~MPEG4Writer
+    status_t    resume(MetaData *param);
+    void        initStart(MetaData *param);
+    void        waitWriterThreadExit();
+    bool        isEnable64BitDuration(int64_t durationUs);
+    off64_t     writeSEIbuffer(MediaBuffer *buffer);
+    void        addSample_lUseCacheWriter(MediaBuffer *buffer);
+    void        checkBufferedMem(const Chunk& chunk);
+    void        eraseChunkSamples(Chunk* chunk);
+    void        addWritedChunk(Chunk* chunk, int32_t chunkSize);
+    void        writeArtAlbBox();
+    bool        isNearLowMemory();
+    long        getMinFreeMem();
+    long        getSysRetainMem();
+    void        setVideoStartTimeUs(int64_t timeUs);
+    int64_t     getVideoStartTimeUs();
+private:
+    int         mMemInfoFd;
+    unsigned long mMinFreeMem;
+    int32_t     mTotalBitrate;
+    unsigned long mSysRetainMem;
+    bool        useMemFreeCheckLM;
+    bool        mResumed;
+    int64_t     mPausedDurationUs;
+    bool        mAudioTrackResumed;
+    bool        mVideoTrackResumed;
+    int64_t     mVideoStartTimeUs;
+    Condition   mResumedCondition;
+    bool        mWriterThreadExit;
+    Condition   mWriterThreadExitCondition;
+    int64_t     mMaxDuration;
+    String8     mArtistTag;
+    String8     mAlbumTag;
+    int64_t     mLowMemoryProtectThreshold;
+    int64_t     mBufferedDataSize;
+    uint32_t    mNotifyCounter;
+    int32_t     mMediaInfoFlag;//add for mtk defined infos in mediarecorder.h.
+    void        notifyEstimateSize(int64_t nTotalBytesEstimate);
+#ifdef USE_FILE_CACHE
+    friend class MPEG4FileCacheWriter;
+    MPEG4FileCacheWriter *mCacheWriter;
+    size_t      mWriterCacheSize;
+#endif
+
+#ifdef SD_FULL_PROTECT
+    bool        mIsSDFull;
+    bool        mSDHasFull;
+    status_t    mTrackResetStatus;// add for check track reset status ok or err
+                                  // if err do not write moov
+
+    struct WritedChunk {
+        Track       *mTrack;        //Owner
+        int32_t     mSize;          //Chunk size
+
+        WritedChunk(Track *track, int32_t size) : mTrack(track), mSize(size) {}
+    };
+
+    List<WritedChunk*>  mWritedChunks;
+#endif
+
+#ifdef WRITER_ENABLE_EDTS_BOX
+    //make the method to record the  start time offset of two tracks optional
+    bool        mEnableEdtsBoxForTimeOffset;
+#endif
+
+    //for EIS2.5
+    int64_t     mEISQueueFrames;
+    bool        mIsEISStop;
+
+    //for vsdof
+    bool        mAudioStopFirst;
+#endif
 };
 
 }  // namespace android

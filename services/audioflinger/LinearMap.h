@@ -18,7 +18,9 @@
 #define ANDROID_LINEAR_MAP_H
 
 #include <stdint.h>
-
+#ifdef MTK_AUDIO
+#include <inttypes.h>
+#endif
 namespace android {
 
 /*
@@ -141,7 +143,15 @@ public:
               // mStepValid(false),      // only valid if mSamples > 1
               // mExtrapolateTail(false), // only valid if mSamples > 0
               mX(new T[size]),
-              mY(new T[size]) { }
+              mY(new T[size]) {
+#ifdef MTK_AUDIO
+              while ((size ) >0){
+              mX[size-1] = 0;
+              mY[size-1] = 0;
+              size--;
+                }
+#endif
+              }
 
     ~LinearMap() {
         delete[] mX;
@@ -308,6 +318,12 @@ protected:
         }
         ssize_t previous = 0;
         int32_t diff = 0;
+#ifdef MTK_AUDIO
+        for (ssize_t i = 0; i < (ssize_t)mSamples; ++i)
+        {
+            ALOGV("trackFrameReleased[%d] %lld, sinkFramesWritten %lld",i,  uArray[i],  vArray[i] );
+        }
+#endif
         for (ssize_t i = 0; i < (ssize_t)mSamples; ++i) {
             size_t current = previousPosition(i);
 
@@ -333,14 +349,38 @@ protected:
                 T u = uStep <= 0 || vStep <= 0 ?  // we do not permit negative ustep or vstep
                         uArray[current]
                       : ((int64_t)diff * uStep + (vStep >> 1)) / vStep + uArray[current];
+#ifdef MTK_AUDIO
+                 ALOGV("u:%" PRId64"  diff:%d  uStep:%d  vStep:%d  u_current:%" PRId64,
+                         u, diff, uStep, vStep, uArray[current]);
+#else
                 // ALOGD("u:%u  diff:%d  uStep:%d  vStep:%d  u_current:%d",
                 //         u, diff, uStep, vStep, uArray[current]);
+#endif
                 if (method != NULL) {
                     *method = (diff >= 0) ?
                             FIND_METHOD_INTERPOLATION : FIND_METHOD_BACKWARD_EXTRAPOLATION;
                 }
                 return u;
             }
+#ifdef MTK_AUDIO
+             if(diff < 0 && (i == (ssize_t)mSamples - 1) && (mSamples >= 2))
+            {
+            // do backward _extraPolation for kernel position
+                int32_t uStep = uArray[previous] - uArray[current]; // non-negative
+                int32_t vStep = vArray[previous] - vArray[current]; // positive
+                T u = uStep <= 0 || vStep <= 0 ?  // we do not permit negative ustep or vstep
+                        uArray[current]
+                      : ((int64_t)diff * uStep + (vStep >> 1)) / vStep + uArray[current];
+                 ALOGV("Backward u:%" PRId64"  diff:%d  uStep:%d  vStep:%d  u_current:%" PRId64,
+                         u, diff, uStep, vStep, uArray[current]);
+
+                if (method != NULL) {
+                    *method = (diff >= 0) ?
+                            FIND_METHOD_INTERPOLATION : FIND_METHOD_BACKWARD_EXTRAPOLATION;
+                }
+                return u;
+            }
+#endif
             previous = current;
         }
         // previous is always valid here.

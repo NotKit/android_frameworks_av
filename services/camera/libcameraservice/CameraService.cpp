@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -73,7 +78,9 @@ using namespace hardware;
 // ----------------------------------------------------------------------------
 // Logging support -- this is for debugging only
 // Use "adb shell dumpsys media.camera -v 1" to change it.
-volatile int32_t gLogLevel = 0;
+//!++
+volatile int32_t gLogLevel = 1;
+//!--
 
 #define LOG1(...) ALOGD_IF(gLogLevel >= 1, __VA_ARGS__);
 #define LOG2(...) ALOGD_IF(gLogLevel >= 2, __VA_ARGS__);
@@ -305,10 +312,39 @@ void CameraService::onDeviceStatusChanged(camera_device_status_t  cameraId,
     std::shared_ptr<CameraState> state = getCameraState(id);
 
     if (state == nullptr) {
+#if MTKCAM_HAVE_CAMERAMOUNT
+    // Initialize state for external camera device
+    {
+        std::set<String8> conflicting;
+        Mutex::Autolock lock(mCameraStatesLock);
+        mCameraStates.emplace(id, std::make_shared<CameraState>(id, 100, conflicting));
+    }
+    {
+        Mutex::Autolock lock(mServiceLock);
+        updateStatus(ICameraServiceListener::STATUS_PRESENT, id);
+    }
+#else
         ALOGE("%s: Bad camera ID %d", __FUNCTION__, cameraId);
         return;
+#endif
     }
 
+//!++ workaround for camera mount
+#if MTKCAM_HAVE_CAMERAMOUNT
+    int oldNumberOfCameras = mNumberOfCameras;
+    mNumberOfCameras = mModule->getNumberOfCameras();
+    ALOGI("%s: mNumberOfCameras=%d -> %d", __FUNCTION__, oldNumberOfCameras, mNumberOfCameras);
+    if ( oldNumberOfCameras > mNumberOfCameras ) {
+        mCameraStates.erase(id);
+    } else {
+        state = getCameraState(id);
+        if (state == nullptr) {
+            ALOGW("%s: camera %d connect fail.", __FUNCTION__, cameraId);
+            return;
+        }
+    }
+#endif
+//!--
     int32_t oldStatus = state->getStatus();
 
     if (oldStatus == static_cast<int32_t>(newStatus)) {
@@ -441,6 +477,9 @@ Status CameraService::getNumberOfCameras(int32_t type, int32_t* numCameras) {
             return STATUS_ERROR_FMT(ERROR_ILLEGAL_ARGUMENT,
                     "Unknown camera type %d", type);
     }
+    //!++
+    LOG1("[getNumberOfCameras] NumberOfCameras:%d mNumberOfNormalCameras:%d \n", mNumberOfCameras, mNumberOfNormalCameras);
+    //!--
     return Status::ok();
 }
 
@@ -452,6 +491,9 @@ Status CameraService::getCameraInfo(int cameraId,
                 "Camera subsystem is not available");
     }
 
+    //!++
+    LOG1("[getCameraInfo] id:%d NumberOfCameras:%d \n", cameraId, mNumberOfCameras);
+    //!--
     if (cameraId < 0 || cameraId >= mNumberOfCameras) {
         return STATUS_ERROR(ERROR_ILLEGAL_ARGUMENT,
                 "CameraId is not valid");
@@ -985,6 +1027,14 @@ Status CameraService::validateConnectLocked(const String8& cameraId,
 
     // Only allow clients who are being used by the current foreground device user, unless calling
     // from our own process.
+    //!++
+    if(strcmp("mtk_vt_use", clientName8.string()) == 0)
+    {
+        ALOGI("validateConnectLocked::always allow %s", "mtk_vt_use");
+    }
+    else
+    {
+    //!--
     if (callingPid != getpid() && (mAllowedUsers.find(clientUserId) == mAllowedUsers.end())) {
         ALOGE("CameraService::connect X (PID %d) rejected (cannot connect from "
                 "device user %d, currently allowed device users: %s)", callingPid, clientUserId,
@@ -993,6 +1043,9 @@ Status CameraService::validateConnectLocked(const String8& cameraId,
                 "Callers from device user %d are not currently allowed to connect to camera \"%s\"",
                 clientUserId, cameraId.string());
     }
+    //!++
+    }
+    //!--
 
     status_t err = checkIfDeviceIsUsable(cameraId);
     if (err != NO_ERROR) {
@@ -1111,7 +1164,34 @@ status_t CameraService::handleEvictionsLocked(const String8& cameraId, int clien
 
         // Update all active clients' priorities
         std::map<int,int> pidToPriorityMap;
+        //!++
+        ALOGI("Incoming clientPid(%d) packageName(%s) priorities(%d)",clientPid,packageName.string(),priorities[priorities.size() - 1]);
+        if(strcmp("mtk_vt_use", packageName) == 0)
+        {
+            ALOGI("Incoming client is mtk_vt_use, set priorities(old:%d) = 0",priorities[priorities.size() - 1]);
+            priorities[priorities.size() - 1] = 0;
+        }
+        //!--
         for (size_t i = 0; i < ownerPids.size() - 1; i++) {
+            //!++
+            //make sure VT has top priority
+            if( mActiveClientManager.getCameraClient(cameraId) != 0 &&
+                strcmp("mtk_vt_use", String8(mActiveClientManager.getCameraClient(cameraId)->getPackageName().string())) == 0)
+            {
+                int clientPid_vt = mActiveClientManager.getCameraClient(cameraId)->getClientPid();
+                if(clientPid_vt == ownerPids[i])
+                {
+                    priorities[i] = 0;
+                    ALOGI("i(%zu) pid(%d) => mtk_vt_use, set priorities(old:%d) = 0",i,ownerPids[i],priorities[i]);
+                }
+            }
+            else if(strcmp("mtk_vt_use", packageName) == 0)
+            {
+                priorities[i] = INT_MAX;
+                ALOGI("i(%zu) pid(%d) not mtk_vt_use, set priorities(old:%d) = INT_MAX",i,ownerPids[i],priorities[i]);
+            }
+            ALOGI("i(%zu) pid(%d) priorities(%d),Priority(%d)",i,ownerPids[i],priorities[i],getCameraPriorityFromProcState(priorities[i]));
+            //!--
             pidToPriorityMap.emplace(ownerPids[i], getCameraPriorityFromProcState(priorities[i]));
         }
         mActiveClientManager.updatePriorities(pidToPriorityMap);
@@ -1690,6 +1770,9 @@ bool CameraService::evictClientIdByRemote(const wp<IBinder>& remote) {
         for (auto& i : evicted) {
             if (i.get() != nullptr) {
                 i->disconnect();
+        //!++ The part is merged by MTK
+                i.clear();
+        //!--
                 ret = true;
             }
         }
@@ -1857,6 +1940,12 @@ void CameraService::doUserSwitch(const std::vector<int32_t>& newUserIds) {
                 i->getKey().string(), String8{clientSp->getPackageName()}.string(),
                 i->getOwnerId(), i->getPriority()));
 
+        //!++
+        // Notify the client of disconnection
+        ALOGW("ERROR_CAMERA_DISCONNECTED");
+        clientSp->notifyError(hardware::camera2::ICameraDeviceCallbacks::ERROR_CAMERA_DISCONNECTED,
+                CaptureResultExtras());
+        //!--
     }
 
     // Do not hold mServiceLock while disconnecting clients, but retain the condition
@@ -1964,6 +2053,9 @@ status_t CameraService::onTransact(uint32_t code, const Parcel& data, Parcel* re
 // media players.
 
 MediaPlayer* CameraService::newMediaPlayer(const char *file) {
+//!++
+    LOG1("[CameraService::newMediaPlayer] + (%s)\r\n", file);
+//!--
     MediaPlayer* mp = new MediaPlayer();
     if (mp->setDataSource(NULL /* httpService */, file, NULL) == NO_ERROR) {
         mp->setAudioStreamType(AUDIO_STREAM_ENFORCED_AUDIBLE);
@@ -1972,26 +2064,77 @@ MediaPlayer* CameraService::newMediaPlayer(const char *file) {
         ALOGE("Failed to load CameraService sounds: %s", file);
         return NULL;
     }
+//!++
+    LOG1("[CameraService::newMediaPlayer] -\r\n");
+//!--
     return mp;
 }
 
 void CameraService::loadSound() {
+//!++
+    LOG1("[CameraService::loadSound] + tid:%d mSoundLock - ref=%d\r\n", ::gettid(), mSoundRef);
+//!--
     ATRACE_CALL();
 
     Mutex::Autolock lock(mSoundLock);
     LOG1("CameraService::loadSound ref=%d", mSoundRef);
     if (mSoundRef++) return;
-
+    //!++
+    #if 0
     mSoundPlayer[SOUND_SHUTTER] = newMediaPlayer("/system/media/audio/ui/camera_click.ogg");
     mSoundPlayer[SOUND_RECORDING_START] = newMediaPlayer("/system/media/audio/ui/VideoRecord.ogg");
     mSoundPlayer[SOUND_RECORDING_STOP] = newMediaPlayer("/system/media/audio/ui/VideoStop.ogg");
+    #else
+    if( pthread_create(&mloadSoundTThreadHandle, NULL, loadSoundThread, this) != 0 )
+    {
+        ALOGE("loadSound pthread create failed");
+    }
+    #endif
+    //!--
 }
+
+//!++
+void CameraService::loadSoundImp() {
+    LOG1("[CameraService::loadSoundImp] E");
+    mSoundPlayer[SOUND_SHUTTER] = newMediaPlayer("/system/media/audio/ui/camera_click.ogg");
+    mSoundPlayer[SOUND_RECORDING_START] = newMediaPlayer("/system/media/audio/ui/VideoRecord.ogg");
+    mSoundPlayer[SOUND_RECORDING_STOP] = newMediaPlayer("/system/media/audio/ui/VideoStop.ogg");
+    LOG1("[CameraService::loadSoundImp] X");
+}
+
+bool CameraService::waitloadSoundDone() {
+    if(mloadSoundTThreadHandle != 0)
+    {
+        LOG1("CameraService::waitloadSoundDone E");
+        int s = pthread_join(mloadSoundTThreadHandle, NULL);
+        mloadSoundTThreadHandle = 0;
+        LOG1("CameraService::waitloadSoundDone X");
+        if( s != 0 )
+        {
+            ALOGE("loadSound pthread join error: %d", s);
+            return false;
+        }
+    }
+    return true;
+}
+
+void* CameraService::loadSoundThread(void* arg) {
+    LOG1("[CameraService::loadSoundThread]");
+    CameraService* pCameraService = (CameraService*)arg;
+    pCameraService->loadSoundImp();
+    pthread_exit(NULL);
+    return NULL;
+}
+//!--
 
 void CameraService::releaseSound() {
     Mutex::Autolock lock(mSoundLock);
     LOG1("CameraService::releaseSound ref=%d", mSoundRef);
     if (--mSoundRef) return;
 
+    //!++
+    waitloadSoundDone();
+    //!--
     for (int i = 0; i < NUM_SOUNDS; i++) {
         if (mSoundPlayer[i] != 0) {
             mSoundPlayer[i]->disconnect();
@@ -2005,11 +2148,17 @@ void CameraService::playSound(sound_kind kind) {
 
     LOG1("playSound(%d)", kind);
     Mutex::Autolock lock(mSoundLock);
+    //!++
+    waitloadSoundDone();
+    //!--
     sp<MediaPlayer> player = mSoundPlayer[kind];
     if (player != 0) {
         player->seekTo(0);
         player->start();
     }
+//!++
+    LOG1("playSound(%d) - tid:%d", kind, ::gettid());
+//!--
 }
 
 // ----------------------------------------------------------------------------
@@ -2172,6 +2321,16 @@ status_t CameraService::BasicClient::startCameraOps() {
     res = mAppOpsManager.startOp(AppOpsManager::OP_CAMERA,
             mClientUid, mClientPackageName);
 
+//!++
+#if 1 //workaround for vt
+#define VT_PACKAGE "mtk_vt_use"
+    if( 0 == strcmp(VT_PACKAGE, String8(mClientPackageName).string()) )
+    {
+        ALOGI("always allow %s", VT_PACKAGE);
+        res = AppOpsManager::MODE_ALLOWED;
+    }
+#endif
+//!--
     if (res == AppOpsManager::MODE_ERRORED) {
         ALOGI("Camera %d: Access for \"%s\" has been revoked",
                 mCameraId, String8(mClientPackageName).string());
@@ -2242,6 +2401,15 @@ void CameraService::BasicClient::opChanged(int32_t op, const String16& packageNa
     int32_t res;
     res = mAppOpsManager.checkOp(AppOpsManager::OP_CAMERA,
             mClientUid, mClientPackageName);
+//!++
+#if 1 //workaround for vt
+    if( 0 == strcmp(VT_PACKAGE, String8(mClientPackageName).string()) )
+    {
+        ALOGI("always allow %s", VT_PACKAGE);
+        res = AppOpsManager::MODE_ALLOWED;
+    }
+#endif
+//!--
     ALOGV("checkOp returns: %d, %s ", res,
             res == AppOpsManager::MODE_ALLOWED ? "ALLOWED" :
             res == AppOpsManager::MODE_IGNORED ? "IGNORED" :

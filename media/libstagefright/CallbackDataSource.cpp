@@ -25,6 +25,7 @@
 #include <media/stagefright/foundation/ADebug.h>
 
 #include <algorithm>
+#include <media/MtkMMLog.h>
 
 namespace android {
 
@@ -51,6 +52,7 @@ status_t CallbackDataSource::initCheck() const {
 }
 
 ssize_t CallbackDataSource::readAt(off64_t offset, void* data, size_t size) {
+    MM_LOGV("readAt offset = %lld, size = %zu", (long long)offset, size);
     if (mMemory == NULL) {
         return -1;
     }
@@ -67,7 +69,13 @@ ssize_t CallbackDataSource::readAt(off64_t offset, void* data, size_t size) {
             mIDataSource->readAt(offset + totalNumRead, numToRead);
         // A negative return value represents an error. Pass it on.
         if (numRead < 0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            // NuCachedSource2 return EOS when read offset > mCacheOffset + mTotalSize
+            MM_LOGV("numRead = %zd, totalNumRead = %zu", numRead, totalNumRead);
+            return numRead == ERROR_END_OF_STREAM ? totalNumRead : numRead;
+#else
             return numRead == ERROR_END_OF_STREAM && totalNumRead > 0 ? totalNumRead : numRead;
+#endif
         }
         // A zero return value signals EOS. Return the bytes read so far.
         if (numRead == 0) {
@@ -123,6 +131,11 @@ status_t TinyCacheSource::initCheck() const {
 }
 
 ssize_t TinyCacheSource::readAt(off64_t offset, void* data, size_t size) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    // add lock to ensure multiple threads readAt normally
+    Mutex::Autolock autoLock(mLock);
+    return readAt2(offset, data, size);
+#else
     if (size >= kCacheSize) {
         return mSource->readAt(offset, data, size);
     }
@@ -173,6 +186,7 @@ ssize_t TinyCacheSource::readAt(off64_t offset, void* data, size_t size) {
     memcpy(data, mCache, numToReturn);
 
     return numToReturn;
+#endif
 }
 
 status_t TinyCacheSource::getSize(off64_t *size) {
@@ -190,4 +204,59 @@ sp<DecryptHandle> TinyCacheSource::DrmInitialization(const char *mime) {
     mCachedSize = 0;
     return mSource->DrmInitialization(mime);
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+ssize_t TinyCacheSource::readAt2(off64_t offset, void* data, size_t size) {
+    MM_LOGV("TinyCacheSource:: readAt2 offset = %lld, size = %zu", (long long)offset, size);
+    if (size >= kCacheSize) {
+        return mSource->readAt(offset, data, size);
+    }
+
+    // Check if the cache satisfies the read.
+    if (mCachedOffset <= offset
+            && offset < (off64_t) (mCachedOffset + mCachedSize)) {
+        if (offset + size <= mCachedOffset + mCachedSize) {
+            memcpy(data, &mCache[offset - mCachedOffset], size);
+            return size;
+        } else {
+            // If the cache hits only partially, flush the cache and read the
+            // remainder.
+
+            // This value is guaranteed to be greater than 0 because of the
+            // enclosing if statement.
+            const ssize_t remaining = mCachedOffset + mCachedSize - offset;
+            memcpy(data, &mCache[offset - mCachedOffset], remaining);
+            const ssize_t readMore = readAt2(offset + remaining,
+                    (uint8_t*)data + remaining, size - remaining);
+            if (readMore < 0) {
+                return readMore;
+            }
+            return remaining + readMore;
+        }
+    }
+
+    // Fill the cache and copy to the caller.
+    const ssize_t numRead = mSource->readAt(offset, mCache, kCacheSize);
+    if (numRead <= 0) {
+        // Flush cache on error
+        mCachedSize = 0;
+        mCachedOffset = 0;
+        return numRead;
+    }
+    if ((size_t)numRead > kCacheSize) {
+        // Flush cache on error
+        mCachedSize = 0;
+        mCachedOffset = 0;
+        return ERROR_OUT_OF_RANGE;
+    }
+
+    mCachedSize = numRead;
+    mCachedOffset = offset;
+    CHECK(mCachedSize <= kCacheSize && mCachedOffset >= 0);
+    const size_t numToReturn = std::min(size, (size_t)numRead);
+    memcpy(data, mCache, numToReturn);
+
+    return numToReturn;
+}
+#endif
 } // namespace android

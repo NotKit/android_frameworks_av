@@ -16,7 +16,6 @@
 
 #define LOG_TAG "APM::AudioPolicyEngine"
 //#define LOG_NDEBUG 0
-
 //#define VERY_VERBOSE_LOGGING
 #ifdef VERY_VERBOSE_LOGGING
 #define ALOGVV ALOGV
@@ -32,6 +31,13 @@
 #include <utils/String8.h>
 #include <utils/Log.h>
 
+#ifdef MTK_AUDIO
+#ifdef CONFIG_MT_ENG_BUILD
+static int log_enable = 1;
+#else
+static int log_enable = __android_log_is_loggable(ANDROID_LOG_DEBUG, LOG_TAG, ANDROID_LOG_INFO);
+#endif
+#endif
 namespace android
 {
 namespace audio_policy
@@ -84,15 +90,28 @@ status_t Engine::setPhoneState(audio_mode_t state)
         ALOGV("  Entering call in setPhoneState()");
         mApmObserver->getVolumeCurves().switchVolumeCurve(AUDIO_STREAM_VOICE_CALL,
                                                           AUDIO_STREAM_DTMF);
+#ifdef MTK_AUDIO
+        AudioPolicyVendorControl &mAudioPolicyVendorControl = mApmObserver->getAudioPolicyVendorControl();
+        mAudioPolicyVendorControl.setVoiceReplaceDTMFStatus(true);
+#endif
     } else if (is_state_in_call(oldState) && !is_state_in_call(state)) {
         ALOGV("  Exiting call in setPhoneState()");
         mApmObserver->getVolumeCurves().restoreOriginVolumeCurve(AUDIO_STREAM_DTMF);
+#ifdef MTK_AUDIO
+        AudioPolicyVendorControl &mAudioPolicyVendorControl = mApmObserver->getAudioPolicyVendorControl();
+        mAudioPolicyVendorControl.setVoiceReplaceDTMFStatus(false);
+#endif
     }
     return NO_ERROR;
 }
 
 status_t Engine::setForceUse(audio_policy_force_use_t usage, audio_policy_forced_cfg_t config)
 {
+#ifdef MTK_CROSSMOUNT_SUPPORT
+        AudioPolicyVendorControl &mAudioPolicyVendorControl = mApmObserver->getAudioPolicyVendorControl();
+        mAudioPolicyVendorControl.setNeedResetInput(false);
+        mAudioPolicyVendorControl.setStart2CrossMount(false);
+#endif
     switch(usage) {
     case AUDIO_POLICY_FORCE_FOR_COMMUNICATION:
         if (config != AUDIO_POLICY_FORCE_SPEAKER && config != AUDIO_POLICY_FORCE_BT_SCO &&
@@ -107,7 +126,11 @@ status_t Engine::setForceUse(audio_policy_force_use_t usage, audio_policy_forced
             config != AUDIO_POLICY_FORCE_WIRED_ACCESSORY &&
             config != AUDIO_POLICY_FORCE_ANALOG_DOCK &&
             config != AUDIO_POLICY_FORCE_DIGITAL_DOCK && config != AUDIO_POLICY_FORCE_NONE &&
-            config != AUDIO_POLICY_FORCE_NO_BT_A2DP && config != AUDIO_POLICY_FORCE_SPEAKER ) {
+            config != AUDIO_POLICY_FORCE_NO_BT_A2DP && config != AUDIO_POLICY_FORCE_SPEAKER
+#ifdef MTK_AUDIO
+            && config != AUDIO_POLICY_FORCE_SYSTEM_ENFORCED
+#endif
+            ) {
             ALOGW("setForceUse() invalid config %d for FOR_MEDIA", config);
             return BAD_VALUE;
         }
@@ -115,10 +138,21 @@ status_t Engine::setForceUse(audio_policy_force_use_t usage, audio_policy_forced
         break;
     case AUDIO_POLICY_FORCE_FOR_RECORD:
         if (config != AUDIO_POLICY_FORCE_BT_SCO && config != AUDIO_POLICY_FORCE_WIRED_ACCESSORY &&
-            config != AUDIO_POLICY_FORCE_NONE) {
+            config != AUDIO_POLICY_FORCE_NONE
+#ifdef MTK_CROSSMOUNT_SUPPORT
+            && config != AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS
+            && config != AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN
+#endif
+            ) {
             ALOGW("setForceUse() invalid config %d for FOR_RECORD", config);
             return BAD_VALUE;
         }
+#ifdef MTK_CROSSMOUNT_SUPPORT
+        if ((mForceUse[usage] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS && config != AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS))
+            mAudioPolicyVendorControl.setNeedResetInput(true);
+        else if ((mForceUse[usage] != AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS && config == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS))
+            mAudioPolicyVendorControl.setStart2CrossMount(true);
+#endif
         mForceUse[usage] = config;
         break;
     case AUDIO_POLICY_FORCE_FOR_DOCK:
@@ -176,7 +210,9 @@ routing_strategy Engine::getStrategyForStream(audio_stream_type_t stream)
     case AUDIO_STREAM_DTMF:
         return STRATEGY_DTMF;
     default:
+#ifndef MTK_AUDIO
         ALOGE("unknown stream type %d", stream);
+#endif
     case AUDIO_STREAM_SYSTEM:
         // NOTE: SYSTEM stream uses MEDIA strategy because muting music and switching outputs
         // while key clicks are played produces a poor result
@@ -229,7 +265,7 @@ routing_strategy Engine::getStrategyForUsage(audio_usage_t usage)
     }
 }
 
-audio_devices_t Engine::getDeviceForStrategy(routing_strategy strategy) const
+audio_devices_t Engine::getDeviceForStrategy(routing_strategy strategy, audio_output_flags_t flags) const
 {
     DeviceVector availableOutputDevices = mApmObserver->getAvailableOutputDevices();
     DeviceVector availableInputDevices = mApmObserver->getAvailableInputDevices();
@@ -237,7 +273,7 @@ audio_devices_t Engine::getDeviceForStrategy(routing_strategy strategy) const
     const SwAudioOutputCollection &outputs = mApmObserver->getOutputs();
 
     return getDeviceForStrategyInt(strategy, availableOutputDevices,
-                                   availableInputDevices, outputs);
+                                   availableInputDevices, outputs, flags);
 }
 
 
@@ -245,10 +281,20 @@ audio_devices_t Engine::getDeviceForStrategy(routing_strategy strategy) const
 audio_devices_t Engine::getDeviceForStrategyInt(routing_strategy strategy,
                                                 DeviceVector availableOutputDevices,
                                                 DeviceVector availableInputDevices,
-                                                const SwAudioOutputCollection &outputs) const
+                                                const SwAudioOutputCollection &outputs,
+                                                audio_output_flags_t flags) const
 {
     uint32_t device = AUDIO_DEVICE_NONE;
     uint32_t availableOutputDevicesType = availableOutputDevices.types();
+#ifdef MTK_AUDIO
+    AudioPolicyVendorControl &mAudioPolicyVendorControl = mApmObserver->getAudioPolicyVendorControl();
+#endif
+#if 1 // MTK_AUDIO, for build pass on unused parameter "flags"
+    if (!(flags & AUDIO_OUTPUT_FLAG_TO_REMOTE_SUBMIX)) {
+        flags = AUDIO_OUTPUT_FLAG_NONE;
+    }
+#endif
+
 
     switch (strategy) {
 
@@ -309,7 +355,13 @@ audio_devices_t Engine::getDeviceForStrategyInt(routing_strategy strategy,
         // - in call AND
         //   - cannot route from voice call RX OR
         //   - audio HAL version is < 3.0 and TX device is on the primary HW module
-        if (getPhoneState() == AUDIO_MODE_IN_CALL) {
+#ifdef MTK_AUDIO
+        if((mAudioPolicyVendorControl.isStateInCallOnly(getPhoneState())))
+#else
+        if (getPhoneState() == AUDIO_MODE_IN_CALL)
+#endif
+        {
+
             audio_devices_t txDevice = getDeviceForInputSource(AUDIO_SOURCE_VOICE_COMMUNICATION);
             sp<AudioOutputDescriptor> primaryOutput = outputs.getPrimaryOutput();
             audio_devices_t availPrimaryInputDevices =
@@ -319,6 +371,10 @@ audio_devices_t Engine::getDeviceForStrategyInt(routing_strategy strategy,
 
             if (((availableInputDevices.types() &
                     AUDIO_DEVICE_IN_TELEPHONY_RX & ~AUDIO_DEVICE_BIT_IN) == 0) ||
+#ifdef MTK_AUDIO
+                     //Device Telephone TX and RX should simultaneously exist, AUDIO_DEVICE_OUT_TELEPHONY_TX not using yet.
+                    ((availableOutputDevices.types() & AUDIO_DEVICE_OUT_TELEPHONY_TX ) == 0) ||
+#endif
                     (((txDevice & availPrimaryInputDevices & ~AUDIO_DEVICE_BIT_IN) != 0) &&
                          (primaryOutput->getAudioPort()->getModuleVersion() <
                              AUDIO_DEVICE_API_VERSION_3_0))) {
@@ -344,7 +400,11 @@ audio_devices_t Engine::getDeviceForStrategyInt(routing_strategy strategy,
             // when not in a phone call, phone strategy should route STREAM_VOICE_CALL to A2DP
             if (!isInCall() &&
                     (mForceUse[AUDIO_POLICY_FORCE_FOR_MEDIA] != AUDIO_POLICY_FORCE_NO_BT_A2DP) &&
-                    (outputs.getA2dpOutput() != 0)) {
+                    (outputs.getA2dpOutput() != 0)
+#ifdef MTK_AUDIO
+                    && !mAudioPolicyVendorControl.getA2DPForeceIgnoreStatus()
+#endif
+            ) {
                 device = availableOutputDevicesType & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP;
                 if (device) break;
                 device = availableOutputDevicesType & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_HEADPHONES;
@@ -376,7 +436,12 @@ audio_devices_t Engine::getDeviceForStrategyInt(routing_strategy strategy,
             // A2DP speaker when forcing to speaker output
             if (!isInCall() &&
                     (mForceUse[AUDIO_POLICY_FORCE_FOR_MEDIA] != AUDIO_POLICY_FORCE_NO_BT_A2DP) &&
-                    (outputs.getA2dpOutput() != 0)) {
+                    (outputs.getA2dpOutput() != 0)
+#ifdef MTK_AUDIO
+                    && !mAudioPolicyVendorControl.getA2DPForeceIgnoreStatus()
+#endif
+            ) {
+
                 device = availableOutputDevicesType & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_SPEAKER;
                 if (device) break;
             }
@@ -452,12 +517,28 @@ audio_devices_t Engine::getDeviceForStrategyInt(routing_strategy strategy,
     // FIXME: STRATEGY_REROUTING follow STRATEGY_MEDIA for now
     case STRATEGY_REROUTING:
     case STRATEGY_MEDIA: {
+#ifdef MTK_CROSSMOUNT_SUPPORT
+        uint32_t deviceCrossMountMaster = AUDIO_DEVICE_NONE;
+#endif
         uint32_t device2 = AUDIO_DEVICE_NONE;
         if (strategy != STRATEGY_SONIFICATION) {
             // no sonification on remote submix (e.g. WFD)
             if (availableOutputDevices.getDevice(AUDIO_DEVICE_OUT_REMOTE_SUBMIX,
                                                  String8("0")) != 0) {
                 device2 = availableOutputDevices.types() & AUDIO_DEVICE_OUT_REMOTE_SUBMIX;
+#ifdef MTK_CROSSMOUNT_SUPPORT
+                if (mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS && !mAudioPolicyVendorControl.getCrossMountMicAudioMixerEnable()) {
+                    if ((flags & AUDIO_OUTPUT_FLAG_TO_REMOTE_SUBMIX) == 0) {
+                        device2 = AUDIO_DEVICE_NONE;
+                    } else if (mAudioPolicyVendorControl.getCrossMountMicLocalPlayback() && device == AUDIO_DEVICE_NONE) {
+                        deviceCrossMountMaster = device2;
+                        device2 = AUDIO_DEVICE_NONE;
+                    }
+                } else if (mAudioPolicyVendorControl.getCrossMountLocalPlayback() && device == AUDIO_DEVICE_NONE) {
+                    deviceCrossMountMaster = device2;
+                    device2 = AUDIO_DEVICE_NONE;
+                }
+#endif
             }
         }
         if (isInCall() && (strategy == STRATEGY_MEDIA)) {
@@ -467,7 +548,12 @@ audio_devices_t Engine::getDeviceForStrategyInt(routing_strategy strategy,
         }
         if ((device2 == AUDIO_DEVICE_NONE) &&
                 (mForceUse[AUDIO_POLICY_FORCE_FOR_MEDIA] != AUDIO_POLICY_FORCE_NO_BT_A2DP) &&
-                (outputs.getA2dpOutput() != 0)) {
+                (outputs.getA2dpOutput() != 0)
+#ifdef MTK_AUDIO
+                && !mAudioPolicyVendorControl.getA2DPForeceIgnoreStatus()
+#endif
+        ) {
+
             device2 = availableOutputDevicesType & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP;
             if (device2 == AUDIO_DEVICE_NONE) {
                 device2 = availableOutputDevicesType & AUDIO_DEVICE_OUT_BLUETOOTH_A2DP_HEADPHONES;
@@ -480,6 +566,13 @@ audio_devices_t Engine::getDeviceForStrategyInt(routing_strategy strategy,
             (mForceUse[AUDIO_POLICY_FORCE_FOR_MEDIA] == AUDIO_POLICY_FORCE_SPEAKER)) {
             device2 = availableOutputDevicesType & AUDIO_DEVICE_OUT_SPEAKER;
         }
+#ifdef MTK_AUDIO
+        //ALOGD("availableOutputDeviceTypes %x",availableOutputDeviceTypes);
+        //ALOGD("mForceUse[%d] = %x",AUDIO_POLICY_FORCE_FOR_MEDIA,mForceUse[AUDIO_POLICY_FORCE_FOR_MEDIA]);
+        if (device2 == AUDIO_DEVICE_NONE && mAudioPolicyVendorControl.getFMTxStatus() && !(device&AUDIO_DEVICE_OUT_SPEAKER)) {
+            device2 = availableOutputDevicesType & AUDIO_DEVICE_OUT_FM;
+        }
+#endif
         if (device2 == AUDIO_DEVICE_NONE) {
             device2 = availableOutputDevicesType & AUDIO_DEVICE_OUT_WIRED_HEADPHONE;
         }
@@ -521,7 +614,9 @@ audio_devices_t Engine::getDeviceForStrategyInt(routing_strategy strategy,
         // device is DEVICE_OUT_SPEAKER if we come from case STRATEGY_SONIFICATION or
         // STRATEGY_ENFORCED_AUDIBLE, AUDIO_DEVICE_NONE otherwise
         device |= device2;
-
+#ifdef MTK_CROSSMOUNT_SUPPORT
+        device |= deviceCrossMountMaster;
+#endif
         // If hdmi system audio mode is on, remove speaker out of output list.
         if ((strategy == STRATEGY_MEDIA) &&
             (mForceUse[AUDIO_POLICY_FORCE_FOR_HDMI_SYSTEM_AUDIO] ==
@@ -541,7 +636,27 @@ audio_devices_t Engine::getDeviceForStrategyInt(routing_strategy strategy,
         ALOGE_IF(device == AUDIO_DEVICE_NONE,
                  "getDeviceForStrategy() no default device defined");
     }
+#ifdef MTK_AUDIO
+#ifdef CONFIG_MT_ENG_BUILD
+    routing_strategy printStrategy = STRATEGY_SONIFICATION_RESPECTFUL;
+#else
+    routing_strategy printStrategy = STRATEGY_PHONE;
+#endif
+        if (strategy <= printStrategy) {
+#ifdef MTK_CROSSMOUNT_SUPPORT
+            ALOGD("s %d avaDev 0x%x ba2dpo %d dev 0x%x  CM-spk %d CM-mic %d sfu [0]:%d [1]:%d [4]:%d", strategy, availableOutputDevicesType,
+                outputs.getA2dpOutput(), device, mAudioPolicyVendorControl.getCrossMountLocalPlayback(),
+                mAudioPolicyVendorControl.getCrossMountMicLocalPlayback(), mForceUse[AUDIO_POLICY_FORCE_FOR_COMMUNICATION], mForceUse[AUDIO_POLICY_FORCE_FOR_MEDIA],
+                mForceUse[AUDIO_POLICY_FORCE_FOR_SYSTEM]);
+#else
+            ALOGD("s %d avaDev 0x%x ba2dpo %d dev 0x%x sfu [0]:%d [1]:%d [4]:%d", strategy, availableOutputDevicesType,
+            outputs.getA2dpOutput(), device, mForceUse[AUDIO_POLICY_FORCE_FOR_COMMUNICATION], mForceUse[AUDIO_POLICY_FORCE_FOR_MEDIA],
+            mForceUse[AUDIO_POLICY_FORCE_FOR_SYSTEM]);
+#endif
+        }
+#else
     ALOGVV("getDeviceForStrategy() strategy %d, device %x", strategy, device);
+#endif
     return device;
 }
 
@@ -551,6 +666,9 @@ audio_devices_t Engine::getDeviceForInputSource(audio_source_t inputSource) cons
     const DeviceVector &availableOutputDevices = mApmObserver->getAvailableOutputDevices();
     const DeviceVector &availableInputDevices = mApmObserver->getAvailableInputDevices();
     const SwAudioOutputCollection &outputs = mApmObserver->getOutputs();
+#ifdef MTK_AUDIO
+    AudioPolicyVendorControl &mAudioPolicyVendorControl = mApmObserver->getAudioPolicyVendorControl();
+#endif
     audio_devices_t availableDeviceTypes = availableInputDevices.types() & ~AUDIO_DEVICE_BIT_IN;
 
     uint32_t device = AUDIO_DEVICE_NONE;
@@ -565,6 +683,14 @@ audio_devices_t Engine::getDeviceForInputSource(audio_source_t inputSource) cons
 
     case AUDIO_SOURCE_DEFAULT:
     case AUDIO_SOURCE_MIC:
+#ifdef MTK_CROSSMOUNT_SUPPORT
+    if ((availableDeviceTypes & AUDIO_DEVICE_IN_REMOTE_SUBMIX) &&
+        (mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS ||
+        mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN) && !mAudioPolicyVendorControl.getCrossMountMicAudioMixerEnable()) {
+        device = AUDIO_DEVICE_IN_REMOTE_SUBMIX;
+        ALOGD("Get AUDIO_DEVICE_IN_REMOTE_SUBMIX for rec");
+    } else
+#endif
     if (availableDeviceTypes & AUDIO_DEVICE_IN_BLUETOOTH_A2DP) {
         device = AUDIO_DEVICE_IN_BLUETOOTH_A2DP;
     } else if ((mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_BT_SCO) &&
@@ -582,13 +708,30 @@ audio_devices_t Engine::getDeviceForInputSource(audio_source_t inputSource) cons
     case AUDIO_SOURCE_VOICE_COMMUNICATION:
         // Allow only use of devices on primary input if in call and HAL does not support routing
         // to voice call path.
+       // Allow only use of devices on primary input if in call and HAL does not support routing
+        // to voice call path.
+#ifdef MTK_AUDIO
+        if ((mAudioPolicyVendorControl.isStateInCallOnly(getPhoneState())) &&
+                (availableOutputDevices.types() & AUDIO_DEVICE_OUT_TELEPHONY_TX) == 0)
+#else
         if ((getPhoneState() == AUDIO_MODE_IN_CALL) &&
-                (availableOutputDevices.types() & AUDIO_DEVICE_OUT_TELEPHONY_TX) == 0) {
+                (availableOutputDevices.types() & AUDIO_DEVICE_OUT_TELEPHONY_TX) == 0)
+#endif
+        {
             sp<AudioOutputDescriptor> primaryOutput = outputs.getPrimaryOutput();
             availableDeviceTypes =
                     availableInputDevices.getDevicesFromHwModule(primaryOutput->getModuleHandle())
                     & ~AUDIO_DEVICE_BIT_IN;
         }
+#ifdef MTK_CROSSMOUNT_SUPPORT
+        if ((availableDeviceTypes & AUDIO_DEVICE_IN_REMOTE_SUBMIX) &&
+            (mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS ||
+            mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN) && !mAudioPolicyVendorControl.getCrossMountMicAudioMixerEnable()) {
+            device = AUDIO_DEVICE_IN_REMOTE_SUBMIX;
+            ALOGD("Get AUDIO_DEVICE_IN_REMOTE_SUBMIX for rec");
+            break;
+        }
+#endif
 
         switch (mForceUse[AUDIO_POLICY_FORCE_FOR_COMMUNICATION]) {
         case AUDIO_POLICY_FORCE_BT_SCO:
@@ -622,6 +765,20 @@ audio_devices_t Engine::getDeviceForInputSource(audio_source_t inputSource) cons
     case AUDIO_SOURCE_VOICE_RECOGNITION:
     case AUDIO_SOURCE_UNPROCESSED:
     case AUDIO_SOURCE_HOTWORD:
+#ifdef MTK_AUDIO
+    case AUDIO_SOURCE_VOICE_UNLOCK:
+    case AUDIO_SOURCE_CUSTOMIZATION1:
+    case AUDIO_SOURCE_CUSTOMIZATION2:
+    case AUDIO_SOURCE_CUSTOMIZATION3:
+#ifdef MTK_CROSSMOUNT_SUPPORT
+        if ((availableDeviceTypes & AUDIO_DEVICE_IN_REMOTE_SUBMIX) &&
+            (mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS ||
+            mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN) && !mAudioPolicyVendorControl.getCrossMountMicAudioMixerEnable()) {
+            device = AUDIO_DEVICE_IN_REMOTE_SUBMIX;
+            ALOGD("Get AUDIO_DEVICE_IN_REMOTE_SUBMIX for rec");
+        } else
+#endif
+#endif
         if (mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_BT_SCO &&
                 availableDeviceTypes & AUDIO_DEVICE_IN_BLUETOOTH_SCO_HEADSET) {
             device = AUDIO_DEVICE_IN_BLUETOOTH_SCO_HEADSET;
@@ -634,11 +791,25 @@ audio_devices_t Engine::getDeviceForInputSource(audio_source_t inputSource) cons
         }
         break;
     case AUDIO_SOURCE_CAMCORDER:
+#ifdef MTK_CROSSMOUNT_SUPPORT
+                if ((availableDeviceTypes & AUDIO_DEVICE_IN_REMOTE_SUBMIX) &&
+                    (mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS ||
+                    mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN) && !mAudioPolicyVendorControl.getCrossMountMicAudioMixerEnable()) {
+                    device = AUDIO_DEVICE_IN_REMOTE_SUBMIX;
+                    ALOGD("Get AUDIO_DEVICE_IN_REMOTE_SUBMIX for rec");
+                } else
+#endif
+#ifdef MTK_AUDIO    // Never built-in mic in camcorder
+                if (availableDeviceTypes & AUDIO_DEVICE_IN_BUILTIN_MIC) {
+                    device = AUDIO_DEVICE_IN_BUILTIN_MIC;
+                }
+#else
         if (availableDeviceTypes & AUDIO_DEVICE_IN_BACK_MIC) {
             device = AUDIO_DEVICE_IN_BACK_MIC;
         } else if (availableDeviceTypes & AUDIO_DEVICE_IN_BUILTIN_MIC) {
             device = AUDIO_DEVICE_IN_BUILTIN_MIC;
         }
+#endif
         break;
     case AUDIO_SOURCE_VOICE_DOWNLINK:
     case AUDIO_SOURCE_VOICE_CALL:
@@ -656,9 +827,32 @@ audio_devices_t Engine::getDeviceForInputSource(audio_source_t inputSource) cons
             device = AUDIO_DEVICE_IN_FM_TUNER;
         }
         break;
+#ifdef MTK_AUDIO
+    case AUDIO_SOURCE_MATV :
+        if (availableDeviceTypes & AUDIO_DEVICE_IN_MATV) {
+            device = AUDIO_DEVICE_IN_MATV;
+        }
+        break;
+    default:
+#ifdef MTK_CROSSMOUNT_SUPPORT
+        if ((availableDeviceTypes & AUDIO_DEVICE_IN_REMOTE_SUBMIX) &&
+            (mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN_WITH_FLAGS ||
+            mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD] == AUDIO_POLICY_FORCE_REMOTE_SUBMIX_IN) && !mAudioPolicyVendorControl.getCrossMountMicAudioMixerEnable()) {
+            device = AUDIO_DEVICE_IN_REMOTE_SUBMIX;
+            ALOGD("Get AUDIO_DEVICE_IN_REMOTE_SUBMIX for rec");
+        } else {
+            device = AUDIO_DEVICE_IN_BUILTIN_MIC;
+        }
+#else
+        device = AUDIO_DEVICE_IN_BUILTIN_MIC;
+#endif
+        ALOGW("getDeviceForInputSource() invalid input source %d", inputSource);
+        break;
+#else
     default:
         ALOGW("getDeviceForInputSource() invalid input source %d", inputSource);
         break;
+#endif
     }
     if (device == AUDIO_DEVICE_NONE) {
         ALOGV("getDeviceForInputSource() no device found for source %d", inputSource);
@@ -668,7 +862,14 @@ audio_devices_t Engine::getDeviceForInputSource(audio_source_t inputSource) cons
         ALOGE_IF(device == AUDIO_DEVICE_NONE,
                  "getDeviceForInputSource() no default device defined");
     }
+#ifdef MTK_AUDIO
+    if (log_enable) {
+        ALOGD("getDeviceForInputSource()input source %d, device %08x sfu [0]:%d [2]:%d", inputSource, device,
+            mForceUse[AUDIO_POLICY_FORCE_FOR_COMMUNICATION], mForceUse[AUDIO_POLICY_FORCE_FOR_RECORD]);
+    }
+#else
     ALOGV("getDeviceForInputSource()input source %d, device %08x", inputSource, device);
+#endif
     return device;
 }
 

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -95,6 +100,10 @@ private:
         template<int CHANNELS>
         inline void readAdvance(TI*& impulse, const int halfNumCoefs,
                 const TI* const in, const size_t inputIndex);
+        //<MTK_ADDED
+        void reset();
+        //MTK_ADDED>
+
 
     private:
         // tuning parameter guidelines: 2 <= multiple <= 8
@@ -125,6 +134,12 @@ private:
             int32_t mFilterSampleRate; // designed filter sample rate.
         src_quality mFilterQuality;    // designed filter quality.
               void* mCoefBuffer;       // if a filter is created, this is not null
+    //<MTK_ADDED
+    audio_format_t mInFormat;
+    audio_format_t mOutFormat;
+public:
+    virtual void ResetBuffer();
+    //MTK_ADDED>
 };
 
 } // namespace android

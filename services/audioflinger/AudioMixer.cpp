@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2007, The Android Open Source Project
 **
@@ -40,6 +45,21 @@
 #include "AudioMixerOps.h"
 #include "AudioMixer.h"
 
+
+#include <media/AudioSystem.h>
+#include <AudioPolicyParameters.h>
+
+#ifdef DEBUG_MIXER_PCM
+#include "AudioUtilmtk.h"
+#endif
+#ifdef TIME_STRETCH_ENABLE
+#include "AudioMTKTimeStretch.h"
+#endif
+
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+#include <cutils/properties.h>
+#endif
+
 // The FCC_2 macro refers to the Fixed Channel Count of 2 for the legacy integer mixer.
 #ifndef FCC_2
 #define FCC_2 2
@@ -58,6 +78,33 @@
 //define ALOGVV printf  // for test-mixer.cpp
 #else
 #define ALOGVV(a...) do { } while (0)
+#endif
+#ifdef MTK_AUDIO
+#define MTK_ALOG_V(fmt, arg...) ALOGV(fmt, ##arg)
+#define MTK_ALOG_D(fmt, arg...) ALOGD(fmt, ##arg)
+#define MTK_ALOG_W(fmt, arg...) ALOGW(fmt, ##arg)
+#define MTK_ALOG_E(fmt, arg...) ALOGE("Err: %5d:, " fmt, __LINE__, ##arg)
+#define MTKAUD_ALOGV ALOGD
+#else
+#define MTK_ALOG_V(fmt, arg...) do { } while(0)
+#define MTK_ALOG_D(fmt, arg...) do { } while(0)
+#define MTK_ALOG_W(fmt, arg...) do { } while(0)
+#define MTK_ALOG_E(fmt, arg...) do { } while(0)
+#define MTKAUD_ALOGV ALOGV
+#endif
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+#include "AudioUtilmtk.h"
+#ifdef TIME_STRETCH_ENABLE
+static   const char * gaf_timestretch_in_pcm = "/sdcard/mtklog/audio_dump/af_mixer_timestretch_in.pcm";
+static   const char * gaf_timestretch_in_propty = "af.timestretch.in.pcm";
+#endif
+#endif
+//#define DEBUG_AUDIO_PCM_FOR_TEST
+#ifdef DEBUG_AUDIO_PCM_FOR_TEST
+static   const char * gaf_mixertest_in_propty            = "af.mixer.test.pcm";
+static   const char * gaf_mixertest_in_pcm               = "/sdcard/mtklog/audio_dump/mixer_test";
+#endif
 #endif
 
 #ifndef ARRAY_SIZE
@@ -80,11 +127,63 @@ static const bool kUseNewMixer = true;
 // because of downmix/upmix support.
 static const bool kUseFloat = true;
 
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+static const size_t kCopyBufferFrameCount = 512 * 4;
+#else
 // Set to default copy buffer size in frames for input processing.
 static const size_t kCopyBufferFrameCount = 256;
+#endif
+
+#ifdef DEBUG_MIXER_PCM
+static   const char * gaf_mixer_drc_pcm_before        = "/sdcard/mtklog/audio_dump/mixer_drc_before";
+static   const char * gaf_mixer_drc_pcm_after         = "/sdcard/mtklog/audio_dump/mixer_drc_after";
+static   const char * gaf_mixer_drc_propty            = "af.mixer.drc.pcm";
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+static   const char * gaf_mixer_limin_pcm_before      = "/sdcard/mtklog/audio_dump/mixer_limin_before";
+static   const char * gaf_mixer_limin_pcm_after       = "/sdcard/mtklog/audio_dump/mixer_limin_after";
+static   const char * gaf_mixer_limin_propty          = "af.mixer.limin.pcm";
+#endif
+static   const char * gaf_mixer_end_pcm               = "/sdcard/mtklog/audio_dump/mixer_end";
+static   const char * gaf_mixer_end_propty            = "af.mixer.end.pcm";
+
+#define MixerDumpPcm(name, propty, pid, tid, value, buffer, size, format, sampleRate, channelCount ) \
+{\
+  char fileName[256]; \
+  sprintf(fileName,"%s_pid%d_tid%d_%p.pcm", name, pid, tid, (void*)value); \
+  AudioDump::threadDump(fileName, buffer, size, propty, format, sampleRate, channelCount); \
+}
+#else
+#define MixerDumpPcm(name, propty, pid, tid, value, buffer, size, format, sampleRate, channelCount)
+#endif
+
+//<MTK DRC Debug
+#define FULL_FRAMECOUNT
+#if 1
+#define DRC_ALOGD(...)
+#else
+#define DRC_ALOGD(...)   ALOGD(__VA_ARGS__)
+#endif
+//MTK DRC Debug>
 
 namespace android {
 
+#ifdef MTK_HIFI_AUDIO
+int32_t AudioMixer::BesSurroundTrackCount = 0;
+#endif
+
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+int AudioMixer::BLOCKSIZE = 512;
+#endif
+
+#ifdef TIME_STRETCH_ENABLE
+bool AudioMixer::isTimeStretchCapable = true;
+#endif
+
+//<MTK_AUDIOMIXER_ENABLE_LIMITER
+// Can use SetParameter to enable/disable limiter feature.
+const char* const AudioMixer::keyLmiterEnable = "keyLimiterOnOff";
+bool AudioMixer::mLimiterEnable = true;
+//MTK_AUDIOMIXER_ENABLE_LIMITER>
 // ----------------------------------------------------------------------------
 
 template <typename T>
@@ -117,6 +216,62 @@ AudioMixer::AudioMixer(size_t frameCount, uint32_t sampleRate, uint32_t maxNumTr
     mState.outputTemp   = NULL;
     mState.resampleTemp = NULL;
     mState.mLog         = &mDummyLog;
+#ifdef FULL_FRAMECOUNT
+    mState.nonResampleTemp = NULL;
+#endif
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    mState.mSampleRate = mSampleRate;
+#endif
+#ifndef MTK_BESSURROUND_ENABLE
+    mState.resampleTemp = new int32_t[MAX_NUM_CHANNELS * mState.frameCount];
+#else
+    mState.downMixBuffer = new int32_t[MAX_NUM_CHANNELS * mState.frameCount];
+    mState.resampleTemp = new int32_t[MAX_NUM_CHANNELS * mState.frameCount];
+    ALOGD("resampleTemp %p, downMixBuffer %p, size %zu(int32 )", mState.resampleTemp,
+        mState.downMixBuffer, mState.frameCount * MAX_NUM_CHANNELS);
+#endif
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    mState.mDRCSupport = false;
+    mState.pDRCTempBuffer = new int32_t[FCC_2 * mState.frameCount];
+    if ((size_t)BLOCKSIZE > mState.frameCount) {
+        BLOCKSIZE = 16;  // google default
+    }
+#endif
+
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+    int ver = Limiter_GetVersion();
+    if (ver < 0x120) {
+        ALOGE("Limiter_GetVersion(): %d, version error!!", ver);
+    }
+
+    uint32_t intBufSize, tempBufSize;
+    Limiter_InitParam stLimitParam;
+
+    Limiter_GetBufferSize(&intBufSize, &tempBufSize, LMTR_IN_FLOAT32_OUT_FLOAT32);
+
+    char value[PROPERTY_VALUE_MAX];
+    property_get(AudioMixer::keyLmiterEnable, value, "1");
+    mLimiterEnable = atoi(value);
+    mState.mpLimiterInternalBuffer = new uint8_t[intBufSize];
+    mState.mpLimiterTempBuffer = new uint8_t[tempBufSize];
+
+    stLimitParam.Channel = 2;
+    stLimitParam.Sampling_Rate = sampleRate;
+    stLimitParam.PCM_Format = LMTR_IN_FLOAT32_OUT_FLOAT32;
+    stLimitParam.State = LMTR_BYPASS_STATE;
+    int err = Limiter_Open(&mState.mpLimiterObj, mState.mpLimiterInternalBuffer, &stLimitParam);
+    if (err < 0) {
+        ALOGE("Limiter_Open() error: %d", err);
+    }
+    Limiter_GetStatus(mState.mpLimiterObj, &(mState.mLimiter_status));
+#endif
+
+#ifdef FULL_FRAMECOUNT
+    if (!mState.nonResampleTemp) {
+        mState.nonResampleTemp = new int32_t[MAX_NUM_CHANNELS * mState.frameCount];
+        ALOGD("%s, new nonResampleTemp %p", __FUNCTION__, mState.nonResampleTemp);
+    }
+#endif
     // mState.reserved
 
     // FIXME Most of the following initialization is probably redundant since
@@ -128,6 +283,35 @@ AudioMixer::AudioMixer(size_t frameCount, uint32_t sampleRate, uint32_t maxNumTr
         t->downmixerBufferProvider = NULL;
         t->mReformatBufferProvider = NULL;
         t->mTimestretchBufferProvider = NULL;
+#ifdef TIME_STRETCH_ENABLE
+        t->mMTKTimestretchBufferProvider = NULL;
+#endif
+#ifdef MTK_BESSURROUND_ENABLE
+        t->mSurroundMixer = NULL;
+        if (mState.downMixBuffer != NULL) {
+            t->mDownMixBuffer = mState.downMixBuffer;
+        }
+        t->mSurroundEnable = 0;
+        t->mSurroundMode = 0;
+#endif
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+        t->mDRCEnable = false;
+        t->mDRCState = false;
+        t->mSteroToMono = BLOUD_S2M_MODE_NONE;
+        t->mpDRCObj = NULL;
+#endif
+#ifdef MTK_HIFI_AUDIO
+        t->mBliSrcAdaptorState=0;
+        t->mBliSrcDown = NULL;
+        t->mBliSrcUp = NULL;
+        t->mBliSrcAdaptor = NULL;
+        t->mBliSrcOutputBuffer = NULL;
+        t->mBliSrcAdaptorShift = 0;
+#endif
+#ifdef MTK_CROSSMOUNT_MULTI_CH_SUPPORT
+        t->mCrossMountLocalPlayback = false;
+        t->mCrossMountSpeakerRole = CROSS_MOUNT_SPEAKER_ROLE_NONE;
+#endif
         t++;
     }
 
@@ -135,16 +319,56 @@ AudioMixer::AudioMixer(size_t frameCount, uint32_t sampleRate, uint32_t maxNumTr
 
 AudioMixer::~AudioMixer()
 {
+    ALOGD("%s start", __FUNCTION__);
     track_t* t = mState.tracks;
     for (unsigned i=0 ; i < MAX_NUM_TRACKS ; i++) {
         delete t->resampler;
         delete t->downmixerBufferProvider;
         delete t->mReformatBufferProvider;
         delete t->mTimestretchBufferProvider;
+#ifdef TIME_STRETCH_ENABLE
+        if (t->mMTKTimestretchBufferProvider != NULL) {
+           delete t->mMTKTimestretchBufferProvider;
+        }
+#endif
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+        if (t->mpDRCObj && t->mDRCState) {
+            t->mpDRCObj->close();
+            t->mDRCState = false;
+        }
+        delete t->mpDRCObj;
+#endif
+#ifdef MTK_BESSURROUND_ENABLE
+        if (t->mSurroundMixer != NULL) {
+            delete t->mSurroundMixer;
+            BesSurroundTrackCount--;
+        }
+#endif
+
+#ifdef MTK_HIFI_AUDIO
+        t->deinitBliSrc();
+#endif
+
         t++;
     }
     delete [] mState.outputTemp;
     delete [] mState.resampleTemp;
+#ifdef FULL_FRAMECOUNT
+    delete [] mState.nonResampleTemp;
+#endif
+
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    delete [] mState.pDRCTempBuffer;
+#endif
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+    delete [] mState.mpLimiterInternalBuffer;
+    delete [] mState.mpLimiterTempBuffer;
+#endif
+#ifdef MTK_BESSURROUND_ENABLE
+    delete [] mState.downMixBuffer;
+#endif
+
+    ALOGD("%s end", __FUNCTION__);
 }
 
 void AudioMixer::setLog(NBLog::Writer *log)
@@ -171,6 +395,10 @@ int AudioMixer::getTrackName(audio_channel_mask_t channelMask,
         track_t* t = &mState.tracks[n];
         t->needs = 0;
 
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+        t->mState = &mState;
+#endif
+
         // Integer volume.
         // Currently integer volume is kept for the legacy integer mixer.
         // Will be removed when the legacy mixer path is removed.
@@ -194,6 +422,11 @@ int AudioMixer::getTrackName(audio_channel_mask_t channelMask,
         t->mAuxLevel = 0.;
         t->mAuxInc = 0.;
         t->mPrevAuxLevel = 0.;
+#ifdef MTK_AUDIO
+        t->mPreVolumeValid[0] = false;
+        t->mPreVolumeValid[1] = false;
+        t->mPreAuxValid = false;
+#endif
 
         // no initialization needed
         // t->frameCount
@@ -228,6 +461,20 @@ int AudioMixer::getTrackName(audio_channel_mask_t channelMask,
                 AUDIO_CHANNEL_REPRESENTATION_POSITION, AUDIO_CHANNEL_OUT_STEREO);
         t->mMixerChannelCount = audio_channel_count_from_out_mask(t->mMixerChannelMask);
         t->mPlaybackRate = AUDIO_PLAYBACK_RATE_DEFAULT;
+#ifdef TIME_STRETCH_ENABLE
+        t->mMTKTimestretchBufferProvider = NULL;
+        t-> mTrackPlayed = 0;
+#endif
+#ifdef MTK_BESSURROUND_ENABLE
+        t->mSurroundMixer = NULL;
+#endif
+        t->mDevSampleRate = mSampleRate;
+#ifdef MTK_AUDIO
+    // add frameCount for dowmix buffer provider to reformat.
+        t->frameCount = mState.frameCount;
+#endif
+        ALOGD("%s, n %d start init", __FUNCTION__, n);
+
         // Check the downmixing (or upmixing) requirements.
         status_t status = t->prepareForDownmix();
         if (status != OK) {
@@ -238,6 +485,13 @@ int AudioMixer::getTrackName(audio_channel_mask_t channelMask,
         ALOGVV("mMixerFormat:%#x  mMixerInFormat:%#x\n", t->mMixerFormat, t->mMixerInFormat);
         t->prepareForReformat();
         mTrackNames |= 1 << n;
+
+#ifdef MTK_AUDIO
+        // for multi-channel track , dowmixer will set mMixerInFormat to 16bit,
+        //set data format to float for data transform is done in dowmix buffer provider.
+        t->mMixerInFormat = kUseFloat && kUseNewMixer
+                ? AUDIO_FORMAT_PCM_FLOAT : AUDIO_FORMAT_PCM_16_BIT;
+#endif
         return TRACK0 + n;
     }
     ALOGE("AudioMixer::getTrackName out of available tracks");
@@ -293,6 +547,11 @@ bool AudioMixer::setChannelMasks(int name,
         const uint32_t resetToSampleRate = track.sampleRate;
         delete track.resampler;
         track.resampler = NULL;
+
+#ifdef MTK_HIFI_AUDIO
+        track.deinitBliSrc();
+#endif
+
         track.sampleRate = mSampleRate; // without resampler, track rate is device sample rate.
         // recreate the resampler with updated format, channels, saved sampleRate.
         track.setResampler(resetToSampleRate /*trackSampleRate*/, mSampleRate /*devSampleRate*/);
@@ -300,8 +559,60 @@ bool AudioMixer::setChannelMasks(int name,
     return true;
 }
 
+#ifdef MTK_BESSURROUND_ENABLE
+status_t AudioMixer::track_t::prepareTrackForSurroundMix()
+{
+    ALOGV("%s", __FUNCTION__);
+    unprepareTrackForSurroundMix();
+    if (AudioMixer::BesSurroundTrackCount >= 3) {
+        ALOGV("prepareTrackForSurroundMix , no surround track available, BesSurroundTrackCount %d, trackName %p",
+            AudioMixer::BesSurroundTrackCount, this);
+        return NO_INIT;
+    }
+    // init either normal downmix or surround down mix
+    mSurroundMixer = new AudioMTKSurroundDownMix();
+    mSurroundMixer->SetBesSurroundOnOFF(mSurroundEnable);
+    mSurroundMixer->SetBesSurroundMode(mSurroundMode);
+
+    uint32_t sampleRate = mDevSampleRate;
+#ifdef MTK_HIFI_AUDIO
+    if (OUTPUT_RATE_192 == sampleRate || OUTPUT_RATE_96 == sampleRate) {
+        sampleRate = OUTPUT_RATE_48;
+    } else if (OUTPUT_RATE_176_4 == sampleRate || OUTPUT_RATE_88_2 == sampleRate) {
+        sampleRate = OUTPUT_RATE_44_1;
+    }
+#endif
+
+    if (0 != (mSurroundMixer->Init((void*)this, sessionId, channelMask, sampleRate))) {
+        delete mSurroundMixer;
+        mSurroundMixer = NULL;
+        return NO_INIT;
+    }
+    AudioMixer::BesSurroundTrackCount++;
+    ALOGV(" BesSurroundTrackCount++ %dtrackName %p", AudioMixer::BesSurroundTrackCount, this);
+    return OK;
+}
+
+void AudioMixer::track_t::unprepareTrackForSurroundMix()
+{
+    if (mSurroundMixer != NULL) {
+        // this track had previously been configured with a downmixer, delete it
+        delete mSurroundMixer;
+        mSurroundMixer = NULL;
+        AudioMixer::BesSurroundTrackCount--;
+        ALOGV("unprepareTrackForSurroundMix BesSurroundTrackCount-- %d, trackName %p",
+            AudioMixer::BesSurroundTrackCount, this);
+    } else {
+        ALOGV(" nothing to do, no downmixer to delete");
+    }
+}
+#endif
+
 void AudioMixer::track_t::unprepareForDownmix() {
     ALOGV("AudioMixer::unprepareForDownmix(%p)", this);
+#ifdef MTK_BESSURROUND_ENABLE
+    unprepareTrackForSurroundMix();    //override this function
+#endif
 
     mDownmixRequiresFormat = AUDIO_FORMAT_INVALID;
     if (downmixerBufferProvider != NULL) {
@@ -314,6 +625,384 @@ void AudioMixer::track_t::unprepareForDownmix() {
         ALOGV(" nothing to do, no downmixer to delete");
     }
 }
+#ifdef TIME_STRETCH_ENABLE
+#ifdef VERY_VERY_VERBOSE_LOGGING
+int timetotal;
+#endif
+AudioMixer::MTKTimeStretchBufferProvider::MTKTimeStretchBufferProvider(int framecount, track_t* pTrack)
+    :   PassthruBufferProvider(), mTrackBufferProvider(NULL), mTimeStretchHandle(NULL), mOutBuffer(NULL),
+        mOutRemain(0)
+{
+    if (framecount > 0) {
+        mOutframecount = framecount;
+    } else {
+        mOutframecount = 4096;
+    }
+    ALOGV("new Timestretch, internal input buffer framecount %zu ", mOutframecount);
+    mTimeStretchHandle = new AudioMTKTimeStretch(mOutframecount);
+    mTimeStretchHandle->SetFirstRamp(pTrack->mTrackPlayed);
+    mOutBuffer = new short[mOutframecount * 4]; // *2 for channel count, *2 for downsampling.
+    mInBuffer = new short[mOutframecount * 4];  // for stretch 4 times. may not enough if downsampling
+    mInputBufferProvider = NULL;
+    memset(&mTimeStretchConfig, 0, sizeof(mTimeStretchConfig));
+}
+
+AudioMixer::MTKTimeStretchBufferProvider::~MTKTimeStretchBufferProvider()
+{
+    //ALOGV("AudioMTKMixer deleting MTKTimeStretchBufferProvider (%p)", this);
+    if (mTimeStretchHandle != NULL) {
+        delete mTimeStretchHandle;
+    }
+    if (mOutBuffer != NULL) {
+        delete []mOutBuffer;
+    }
+    if (mInBuffer != NULL) {
+        delete []mInBuffer;
+    }
+}
+
+void AudioMixer::MTKTimeStretchBufferProvider::releaseBuffer(AudioBufferProvider::Buffer *pBuffer)
+{
+    int ChannelCount = popcount(mTimeStretchConfig.inputCfg.channels);
+    ALOGVV("MTKTimeStretchBufferProvider::releaseBuffer()");
+
+    if (pBuffer == NULL) {
+        ALOGE("DownmixerBufferProvider::releaseBuffer() error: NULL track buffer provider");
+        return;
+    }
+    if (mOutRemain  == 0 && pBuffer->frameCount != 0) {
+        // for frame count < 512,  time stretch is not activated, so getNextBuffer returns non-time stretched buffer
+        // and release non time stretched buffer here.
+        ALOGVV("for in frame count <512 case realease real buffer (non-stretched) count");
+        mBuffer.frameCount = pBuffer->frameCount;
+        mTrackBufferProvider->releaseBuffer(&mBuffer);
+    } else {
+        // maintain internal buffer: internal buffer(mOutBuffer) keeps time stretched data.
+        ALOGVV("release pBuffer-> raw %p, pBuffer->frameCount %d", pBuffer->raw, pBuffer->frameCount);
+        mOutRemain -= pBuffer->frameCount;
+        memcpy(mOutBuffer, mOutBuffer + (pBuffer->frameCount * ChannelCount), (mOutRemain * ChannelCount) * sizeof(short));
+        //mBuffer.raw = pBuffer->raw;
+        ALOGVV("release mBuffer-> raw %p, mBuffer->frameCount %d", mBuffer.raw, mBuffer.frameCount);
+        // release what we originally get from audio Track.
+        mTrackBufferProvider->releaseBuffer(&mBuffer);
+    }
+    pBuffer->raw = mOutBuffer;
+    pBuffer->frameCount = 0;
+    ALOGVV("MTKTimeStretchBufferProvider %d keeped.", mOutRemain);
+    ALOGVV("release pBuffer-> raw %p, pBuffer->frameCount %d", pBuffer->raw, pBuffer->frameCount);
+}
+
+status_t AudioMixer::MTKTimeStretchBufferProvider::getNextBuffer(AudioBufferProvider::Buffer *pBuffer)
+{
+    int outsize;
+    int insize;
+    int ChannelCount;
+    short* OutBufferPtr;
+    int second_request = 0;
+    int dataGet = 0;
+    int original_require = pBuffer->frameCount;
+    status_t res;
+    ALOGD("MTKTimeStretchBufferProvider::getNextBuffer() this %p", this);
+
+    if (mTimeStretchHandle == NULL) {
+        ALOGE("MTKTimeStretchBufferProvider::getNextBuffer() error: NULL handler");
+        return NO_INIT;
+    }
+
+    if (this->mTrackBufferProvider == NULL) {
+        ALOGE("MTKTimeStretchBufferProvider::getNextBuffer() error: NULL track buffer provider");
+        return NO_INIT;
+    }
+    if (mOutBuffer == NULL) {
+        ALOGE("MTKTimeStretchBufferProvider::getNextBuffer() error: NULL internal buffer");
+        return NO_INIT;
+    }
+    if (mOutRemain != 0) {
+        // if internal buffer still has time stretched data, return directly.
+        pBuffer->frameCount = (original_require < mOutRemain) ? original_require : mOutRemain;
+        ALOGV("MTKTimeStretchBufferProvider::getNextBuffer() directly return %zu", pBuffer->frameCount);
+        pBuffer->raw = mOutBuffer;
+        return OK;
+    }
+
+    /////////////// Get new data and process///////////////////////////
+    ALOGVV("mOutframecount%d, pBuffer->frameCount %d", mOutframecount, pBuffer->frameCount);
+
+    ////////////Check buffer size availability//////////////////////////////
+    if (mOutframecount < pBuffer->frameCount) {
+        pBuffer->frameCount = mOutframecount; // can't exceed internal buffer size;
+    }
+
+    ALOGVV(" pBuffer->frameCount  %d", pBuffer->frameCount);
+
+    /////////// Calculate needed input frame count//////////////////////////
+    if (mTimeStretchHandle->mBTS_RTParam.TS_Ratio != 100) {
+        pBuffer->frameCount = (pBuffer->frameCount * 100) / mTimeStretchHandle->mBTS_RTParam.TS_Ratio;
+        pBuffer->frameCount = (pBuffer->frameCount == 0) ? (pBuffer->frameCount + 1) : pBuffer->frameCount;
+    }
+    pBuffer->frameCount = mTimeStretchHandle->InternalBufferSpace() > pBuffer->frameCount
+        ? pBuffer->frameCount : mTimeStretchHandle->InternalBufferSpace();
+    if (mTimeStretchHandle->mBTS_RTParam.TS_Ratio <= 400) {
+        if (mTimeStretchHandle->InternalBufferFrameCount() + pBuffer->frameCount < 256) {
+            // require more frame so that time stretch can be motivated.
+            //ALOGVV("enforce process framecount >256");
+            pBuffer->frameCount = 256 - mTimeStretchHandle->InternalBufferFrameCount();
+        }
+    }
+    /////////Get data////////////////////////////////////////////////
+    ALOGV("Timestertch getNextBuffer real required %zu", pBuffer->frameCount);
+    mBuffer.frameCount = pBuffer->frameCount;
+    mBuffer.raw = pBuffer->raw;
+    res = mTrackBufferProvider->getNextBuffer(&mBuffer);
+
+    ChannelCount = popcount(mTimeStretchConfig.inputCfg.channels);
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+    const int SIZE = 256;
+    char fileName[SIZE];
+    sprintf(fileName, "%s_%p.pid%d.tid%d.pcm", gaf_timestretch_in_pcm, this, getpid(), gettid());
+    AudioDump::dump(fileName, mBuffer.raw, mBuffer.frameCount << ChannelCount, gaf_timestretch_in_propty);
+#ifdef VERY_VERY_VERBOSE_LOGGING
+    timetotal += mBuffer.frameCount;
+    ALOGVV("timetotal %d, mBuffer.frameCount %d", timetotal, mBuffer.frameCount);
+#endif
+#endif
+#endif
+    //ALOGD("mBuffer.raw %x,mBuffer.frameCount*4 %d",mBuffer.raw,mBuffer.frameCount<<ChannelCount);
+    ALOGV("Timestertch getNextBuffer real get %zu", mBuffer.frameCount);
+    dataGet += mBuffer.frameCount;
+    second_request = pBuffer->frameCount - mBuffer.frameCount;
+    if (second_request && dataGet != 0) {
+        ALOGV("second_request real require %d", second_request);
+        ALOGVV("mBuffer.raw %p pBuffer-> raw %p", mBuffer.raw, pBuffer->raw);
+        memcpy(mInBuffer, mBuffer.raw, mBuffer.frameCount << ChannelCount);
+        mTrackBufferProvider->releaseBuffer(&mBuffer);
+        mBuffer.frameCount = second_request;
+        ALOGVV("mBuffer.raw %p, mBuffer.frameCount %d", mBuffer.raw, mBuffer.frameCount);
+        mTrackBufferProvider->getNextBuffer(&mBuffer);
+        if (mBuffer.frameCount) {
+            memcpy(mInBuffer + dataGet * ChannelCount, mBuffer.raw, mBuffer.frameCount << ChannelCount);
+        }
+        ALOGV("second_request real get %zu", mBuffer.frameCount);
+        dataGet += mBuffer.frameCount;
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+        if (mBuffer.frameCount) {
+            AudioDump::dump(fileName, mBuffer.raw, mBuffer.frameCount << ChannelCount, gaf_timestretch_in_propty);
+#ifdef VERY_VERY_VERBOSE_LOGGING
+            timetotal += mBuffer.frameCount;
+            ALOGVV("timetotal %d, mBuffer.frameCount %d", timetotal, mBuffer.frameCount);
+#endif
+        }
+#endif
+#endif
+    }
+#if  1
+    ////////////////////process data///////////////////////////////////
+    if (res == OK && dataGet != 0) {
+        insize = dataGet << ChannelCount;
+
+        // available output buffer space
+        outsize = (mOutframecount - mOutRemain) << ChannelCount;
+
+        // output pointer offset to last round data
+        OutBufferPtr = mOutBuffer + (mOutRemain << (ChannelCount - 1));
+        ALOGVV("mBuffer.i16 %d pBuffer->raw %d", mBuffer.i16, pBuffer->raw);
+
+        short* inptr = (second_request && dataGet != 0 ) ? mInBuffer : mBuffer.i16;
+        mTimeStretchHandle->process(inptr, OutBufferPtr, &insize, &outsize);
+        // insize always returns 0, since timestretch accumulate samples.
+        //ALOGV("getNextBuffer is TimeStretching");
+        mOutRemain += outsize >> (ChannelCount);
+        // real consumed sample count, release later.
+        //mBuffer.frameCount -= ( insize >> ChannelCount); //(stereo : 2, mono :1)
+#if 0
+        if (mOutRemain != 0) {
+            // stretched output framecount
+            pBuffer->frameCount = mOutRemain;
+            // replace out buffer.
+            pBuffer->raw = mOutBuffer;
+        } else {
+            /// for smple less than 512 sample, do not do time stretch, returns original getNextBuffer sample count.
+            /// use orignal  buffer frame count and buffer size to bypass time stretch.
+            pBuffer->frameCount = mBuffer.frameCount;
+            pBuffer->raw = mBuffer.raw;
+        }
+#else
+        // stretched output framecount
+        //pBuffer->frameCount = mOutRemain;
+        pBuffer->frameCount = (original_require < mOutRemain) ? original_require : mOutRemain;
+        // replace out buffer.
+        pBuffer->raw = mOutBuffer;
+#endif
+        ALOGVV(" getNextBuffer: mOutRemain %d", mOutRemain);
+    } else {
+        ALOGD("getNexBuffer returns not ok");
+        pBuffer->frameCount = mBuffer.frameCount ;
+        pBuffer->raw = mBuffer.raw;
+    }
+#else
+    memcpy(mOutBuffer, mBuffer.i16, mBuffer.frameCount * 4);
+
+    ALOGD("mBuffer-> raw %x, mBuffer->frameCount %d", mBuffer.raw, mBuffer.frameCount);
+    //pBuffer->raw = mBuffer.raw;
+    pBuffer->raw = mOutBuffer;
+    pBuffer->frameCount = mBuffer.frameCount;
+    //mBuffer.raw = mOutBuffer;
+    //mBuffer.frameCount = pBuffer->frameCount;
+
+    ALOGD("pBuffer-> raw %x, pBuffer->frameCount %d", pBuffer->raw, pBuffer->frameCount);
+#endif
+    return res;
+}
+
+status_t AudioMixer::MTKTimeStretchBufferProvider::TimeStretchConfig(int ratio)
+{
+    int ch_num;
+    if (mTimeStretchHandle == NULL) {
+        return -1;
+    }
+    if (mTimeStretchConfig.inputCfg.samplingRate == 0 ||
+        (mTimeStretchConfig.inputCfg.channels & (!AUDIO_CHANNEL_OUT_STEREO))) {
+        return -1;
+    }
+
+    if (mTimeStretchConfig.inputCfg.format != AUDIO_FORMAT_PCM_16_BIT) {
+        return -1;
+    }
+    ch_num = (mTimeStretchConfig.inputCfg.channels & AUDIO_CHANNEL_OUT_MONO) ? 1 : 2;
+    mTimeStretchHandle->setParameters(&ratio);
+    return OK;
+}
+#endif
+
+#ifdef TIME_STRETCH_ENABLE
+status_t AudioMixer::track_t::initTrackMTKTimeStretch(int ratio)
+{
+    status_t status = OK;
+    MTKTimeStretchBufferProvider* tsbufferProvider =(MTKTimeStretchBufferProvider*)mMTKTimestretchBufferProvider;
+    if ((tsbufferProvider == NULL) && ratio == 100) {
+        return status;
+    }
+    if (ratio > 55) {
+        //pTrack->channelMask = mask;
+        //pTrack->channelCount = channelCount;
+        if (tsbufferProvider == NULL) {
+            ALOGV("initTrackMTKTimeStretch(track=%p, ratio= %d) calls prepareTrackForMTKTimeStretch()",
+                this, ratio);
+            status = prepareTrackForMTKTimeStretch(mState->frameCount,ratio);
+        } else {
+            ALOGVV("initTrackMTKTimeStretch( ratio= %d) calls TimeStretchConfig()", ratio);
+            status = tsbufferProvider->TimeStretchConfig(ratio);
+        }
+    } else {
+        ALOGV("initTrackMTKTimeStretch(track=%p, ratio= %d) calls unprepareTrackForMTKTimeStretch()",
+            this, ratio);
+        unprepareTrackForMTKTimeStretch();
+    }
+    return status;
+}
+
+void AudioMixer::track_t::unprepareTrackForMTKTimeStretch() {
+    ALOGV("unprepareTrackForMTKTimeStretch(%p)", this);
+    MTKTimeStretchBufferProvider* tsbufferProvider =(MTKTimeStretchBufferProvider*)mMTKTimestretchBufferProvider;
+
+    if (tsbufferProvider != NULL) {
+        // this track had previously been configured with a Time stretch, delete it
+        if (tsbufferProvider->mOutRemain != 0) {
+            if (resampler != NULL) {
+                // in case resampler keeps time stretched data.
+                resampler->ResetBuffer();
+             }
+        }
+        bufferProvider = tsbufferProvider->mTrackBufferProvider;
+        delete tsbufferProvider;
+        mMTKTimestretchBufferProvider = NULL;
+
+        reconfigureBufferProviders();
+    } else {
+        //ALOGV(" nothing to do, no timestretch to delete");
+    }
+}
+
+status_t AudioMixer::track_t::prepareTrackForMTKTimeStretch(int framecount, int ratio)
+{
+    ALOGV("AudioMTKMixer::prepareTrackForMTKTimeStretch(%p) with ratio %d, framecount %d", this, ratio, framecount);
+
+    // discard the previous downmixer if there was one
+    unprepareTrackForMTKTimeStretch();
+
+    if (!isTimeStretchCapable) {
+        ALOGE("prepareTrackForMTKTimeStretch(%p) fails: mixer doesn't support TimeStretch ", this);
+        return NO_INIT;
+    }
+    if (bufferProvider == NULL) {
+        ALOGE("prepareTrackForMTKTimeStretch(%p) fails: pTrack->bufferProvider is null, pTrack %p", this, this);
+        return NO_INIT;
+    }
+    MTKTimeStretchBufferProvider* pDbp = new MTKTimeStretchBufferProvider(framecount, this);
+    if (pDbp == NULL) {
+       ALOGE("prepareTrackForMTKTimeStretch(%p) fails: MTKTimeStretchBufferProvider is null", this);
+       return NO_INIT;
+    }
+    /*if (pTrack->mBitFormat != AUDIO_FORMAT_PCM_16_BIT)
+    {
+
+    ALOGE("prepareTrackForMTKTimeStretch(%d) fails: TimeStretch doesn't support format other than AUDIO_FORMAT_PCM_16_BIT ",
+            trackName);
+    goto noTimeStretchForActiveTrack;
+    }*/
+
+    // channel input configuration will be overridden per-track
+    pDbp->mTimeStretchConfig.inputCfg.channels =channelMask;
+    pDbp->mTimeStretchConfig.outputCfg.channels = AUDIO_CHANNEL_OUT_STEREO;
+    pDbp->mTimeStretchConfig.inputCfg.format = AUDIO_FORMAT_PCM_16_BIT;
+    pDbp->mTimeStretchConfig.outputCfg.format = AUDIO_FORMAT_PCM_16_BIT;
+    pDbp->mTimeStretchConfig.inputCfg.samplingRate = sampleRate;
+    pDbp->mTimeStretchConfig.outputCfg.samplingRate = sampleRate;
+    pDbp->mTimeStretchConfig.inputCfg.accessMode = EFFECT_BUFFER_ACCESS_READ;
+    pDbp->mTimeStretchConfig.outputCfg.accessMode = EFFECT_BUFFER_ACCESS_WRITE;
+    // input and output buffer provider, and frame count will not be used as the downmix effect
+    // process() function is called directly (see DownmixerBufferProvider::getNextBuffer())
+    pDbp->mTimeStretchConfig.inputCfg.mask = EFFECT_CONFIG_SMP_RATE | EFFECT_CONFIG_CHANNELS |
+            EFFECT_CONFIG_FORMAT | EFFECT_CONFIG_ACC_MODE;
+    pDbp->mTimeStretchConfig.outputCfg.mask = pDbp->mTimeStretchConfig.inputCfg.mask;
+
+    // Configure and enable TimeStretch
+    if (pDbp->mTimeStretchHandle->init(sampleRate, popcount(channelMask), ratio) != 0) {
+        ALOGE("prepareTrackForMTKTimeStretch(%p) fails: Open Time stretch fail ", this);
+        goto noTimeStretchForActiveTrack;
+    }
+    // initialization successful:
+    // if reformat buffer provider is used:
+    if (mReformatBufferProvider != NULL) {
+        bufferProvider =  mReformatBufferProvider->getBufferProvider();
+        ALOGV("reset track buffer provider if reformat is used  pTrack->bufferProvider %p", bufferProvider);
+    }
+    // - keep track of the real buffer provider in case it was set before
+    pDbp->mTrackBufferProvider = bufferProvider;
+    // - we'll use the downmix effect integrated inside this
+    //    track's buffer provider, and we'll use it as the track's buffer provider
+    mMTKTimestretchBufferProvider = pDbp;
+    bufferProvider = pDbp;
+
+    if (mReformatBufferProvider) {
+        mReformatBufferProvider->setBufferProvider(bufferProvider);
+        bufferProvider = mReformatBufferProvider;
+
+        ALOGV("set reformat buffer provider after time stretch  pTrack->bufferProvider %p", bufferProvider);
+    }
+
+    ALOGV("prepareTrackForMTKTimeStretch, pTrack->bufferProvider : %p  pTrack->mTrackBufferProvider %p ",
+        bufferProvider, pDbp->mTrackBufferProvider);
+    return NO_ERROR;
+
+    noTimeStretchForActiveTrack:
+    delete pDbp;
+    mMTKTimestretchBufferProvider = NULL;
+    return NO_INIT;
+}
+#endif
 
 status_t AudioMixer::track_t::prepareForDownmix()
 {
@@ -329,6 +1018,15 @@ status_t AudioMixer::track_t::prepareForDownmix()
                     && mMixerChannelMask == AUDIO_CHANNEL_OUT_STEREO)) {
         return NO_ERROR;
     }
+
+#ifdef MTK_BESSURROUND_ENABLE
+   //ALOGD("%s prepareTrackForSurroundMix ", __FUNCTION__);
+   status_t status = prepareTrackForSurroundMix();
+   if (status != NO_INIT) {
+      return status;
+   }
+#endif
+
     // DownmixerBufferProvider is only used for position masks.
     if (audio_channel_mask_get_representation(channelMask)
                 == AUDIO_CHANNEL_REPRESENTATION_POSITION
@@ -408,19 +1106,32 @@ status_t AudioMixer::track_t::prepareForReformat()
 void AudioMixer::track_t::reconfigureBufferProviders()
 {
     bufferProvider = mInputBufferProvider;
+    ALOGV("%s, mInputBufferProvider %p", __FUNCTION__, mInputBufferProvider);
+#ifdef TIME_STRETCH_ENABLE
+    // order does matter.. MTK only support 16 bit processing.
+    if (mMTKTimestretchBufferProvider) {
+        ALOGD("set mMTKTimestretchBufferProvider %p ", bufferProvider);
+        mMTKTimestretchBufferProvider->setBufferProvider(bufferProvider);
+        bufferProvider = mMTKTimestretchBufferProvider;
+    }
+#endif
     if (mReformatBufferProvider) {
+        ALOGV("set mReformatBufferProvider %p ", bufferProvider);
         mReformatBufferProvider->setBufferProvider(bufferProvider);
         bufferProvider = mReformatBufferProvider;
     }
     if (downmixerBufferProvider) {
+        ALOGV("set downmixerBufferProvider %p ", bufferProvider);
         downmixerBufferProvider->setBufferProvider(bufferProvider);
         bufferProvider = downmixerBufferProvider;
     }
     if (mPostDownmixReformatBufferProvider) {
+        ALOGV("set mPostDownmixReformatBufferProvider %p ", bufferProvider);
         mPostDownmixReformatBufferProvider->setBufferProvider(bufferProvider);
         bufferProvider = mPostDownmixReformatBufferProvider;
     }
     if (mTimestretchBufferProvider) {
+        ALOGV("set mTimestretchBufferProviderv %p ", bufferProvider);
         mTimestretchBufferProvider->setBufferProvider(bufferProvider);
         bufferProvider = mTimestretchBufferProvider;
     }
@@ -444,9 +1155,33 @@ void AudioMixer::deleteTrackName(int name)
     mState.tracks[name].unprepareForDownmix();
     // delete the reformatter
     mState.tracks[name].unprepareForReformat();
+
+#ifdef TIME_STRETCH_ENABLE
+    mState.tracks[name].unprepareTrackForMTKTimeStretch() ;
+    delete track.mMTKTimestretchBufferProvider;
+    track.mMTKTimestretchBufferProvider = NULL;
+    track.mTrackPlayed = 0;
+#endif
     // delete the timestretch provider
     delete track.mTimestretchBufferProvider;
     track.mTimestretchBufferProvider = NULL;
+
+#ifdef MTK_HIFI_AUDIO
+    track.deinitBliSrc();
+#endif
+
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    track.mDRCEnable = false;
+    if (track.mpDRCObj) {
+        track.mpDRCObj->close();
+        track.mDRCState = false;
+        if (NULL != track.mpDRCObj) {
+            delete track.mpDRCObj;
+            track.mpDRCObj = NULL;
+        }
+    }
+#endif
+
     mTrackNames &= ~(1<<name);
 }
 
@@ -503,13 +1238,20 @@ void AudioMixer::disable(int name)
  */
 static inline bool setVolumeRampVariables(float newVolume, int32_t ramp,
         int16_t *pIntSetVolume, int32_t *pIntPrevVolume, int32_t *pIntVolumeInc,
-        float *pSetVolume, float *pPrevVolume, float *pVolumeInc) {
+        float *pSetVolume, float *pPrevVolume, float *pVolumeInc
+#ifdef MTK_AUDIO
+        ,bool *pPreVolumeValid
+#endif
+        ) {
     // check floating point volume to see if it is identical to the previously
     // set volume.
     // We do not use a tolerance here (and reject changes too small)
     // as it may be confusing to use a different value than the one set.
     // If the resulting volume is too small to ramp, it is a direct set of the volume.
     if (newVolume == *pSetVolume) {
+#ifdef MTK_AUDIO
+        *pPreVolumeValid = true;
+#endif
         return false;
     }
     if (newVolume < 0) {
@@ -544,7 +1286,11 @@ static inline bool setVolumeRampVariables(float newVolume, int32_t ramp,
     }
 
     // set floating point volume ramp
-    if (ramp != 0) {
+    if (ramp != 0
+#ifdef MTK_AUDIO
+        && *pPreVolumeValid
+#endif
+    ) {
         // when the ramp completes, *pPrevVolume is set to *pSetVolume, so there
         // is no computational mismatch; hence equality is checked here.
         ALOGD_IF(*pPrevVolume != *pSetVolume, "previous float ramp hasn't finished,"
@@ -574,7 +1320,11 @@ static inline bool setVolumeRampVariables(float newVolume, int32_t ramp,
             AudioMixer::UNITY_GAIN_INT : (int32_t)scaledVolume;
 
     // set integer volume ramp
-    if (ramp != 0) {
+    if (ramp != 0
+#ifdef MTK_AUDIO
+        && *pPreVolumeValid
+#endif
+    ) {
         // integer volume is U4.12 (to use 16 bit multiplies), but ramping uses U4.28.
         // when the ramp completes, *pIntPrevVolume is set to *pIntSetVolume << 16, so there
         // is no computational mismatch; hence equality is checked here.
@@ -590,11 +1340,18 @@ static inline bool setVolumeRampVariables(float newVolume, int32_t ramp,
     }
 
     // if no ramp, or ramp not allowed, then clear float and integer increments
-    if (ramp == 0) {
+    if (ramp == 0
+#ifdef MTK_AUDIO
+        || !(*pPreVolumeValid)
+#endif
+    ) {
         *pVolumeInc = 0;
         *pPrevVolume = newVolume;
         *pIntVolumeInc = 0;
         *pIntPrevVolume = intVolume << 16;
+#ifdef MTK_AUDIO
+        *pPreVolumeValid = true;
+#endif
     }
     *pSetVolume = newVolume;
     *pIntSetVolume = intVolume;
@@ -665,6 +1422,37 @@ void AudioMixer::setParameter(int name, int target, int param, void *value)
                 invalidateState(1 << name);
             }
             } break;
+#ifdef TIME_STRETCH_ENABLE
+        case DO_TIMESTRETCH:
+            mState.tracks[name].initTrackMTKTimeStretch(valueInt);
+            //ALOGD("DO_TIMESTRETCH track name %d ration %d",name, valueInt);
+            break;
+#endif
+#ifdef MTK_AUDIO
+        case STREAM_TYPE:
+            track.mStreamType = (audio_stream_type_t)valueInt;
+            break;
+#endif
+        case STEREO2MONO:
+            //ALOGD("STEREO2MONO valueInt %d", valueInt);
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+            if (track.mSteroToMono != (BLOUD_S2M_MODE_ENUM)valueInt) {
+                if (track.mpDRCObj != NULL) {
+                    track.mpDRCObj->setParameter(BLOUD_PAR_SET_STEREO_TO_MONO_MODE, (void *)(uintptr_t)valueInt);
+                }
+                ALOGD("setParameter(TRACK, STEREO2MONO, %#x)", valueInt);
+            }
+#endif
+            track.mSteroToMono = (BLOUD_S2M_MODE_ENUM)valueInt;
+            break;
+#ifdef MTK_CROSSMOUNT_MULTI_CH_SUPPORT
+        case CROSSMOUNT_LOCALPLAY:
+            track.mCrossMountLocalPlayback = valueInt;
+            break;
+        case SPEAKER_ROLE:
+            track.mCrossMountSpeakerRole = (CROSS_MOUNT_SPEAKER_ROLE)valueInt;
+            break;
+#endif
         default:
             LOG_ALWAYS_FATAL("setParameter track: bad param %d", param);
         }
@@ -675,6 +1463,8 @@ void AudioMixer::setParameter(int name, int target, int param, void *value)
         case SAMPLE_RATE:
             ALOG_ASSERT(valueInt > 0, "bad sample rate %d", valueInt);
             if (track.setResampler(uint32_t(valueInt), mSampleRate)) {
+                ALOGD("setParameter(RESAMPLE, SAMPLE_RATE, %u)",
+                        uint32_t(valueInt));
                 ALOGV("setParameter(RESAMPLE, SAMPLE_RATE, %u)",
                         uint32_t(valueInt));
                 invalidateState(1 << name);
@@ -687,9 +1477,34 @@ void AudioMixer::setParameter(int name, int target, int param, void *value)
         case REMOVE:
             delete track.resampler;
             track.resampler = NULL;
+
+#ifdef MTK_HIFI_AUDIO
+            track.deinitBliSrc();
+#endif
+
             track.sampleRate = mSampleRate;
             invalidateState(1 << name);
             break;
+#ifdef MTK_HIFI_AUDIO
+        case ADAPTOR:
+            {
+                int BliSrcAdaptorState = -1;
+                uint32_t e0 = mState.enabledTracks;
+                while (e0) {
+                    const int i = 31 - __builtin_clz(e0);
+                    e0 &= ~(1 << i);
+                    track_t& t = mState.tracks[i];
+                    if (t.mBliSrcAdaptorState != uint32_t(valueInt)) {
+                        t.mBliSrcAdaptorState = uint32_t(valueInt);
+                        BliSrcAdaptorState = uint32_t(valueInt);
+                    }
+                }
+                if (BliSrcAdaptorState != -1) {
+                    ALOGD("setParameter(TRACK, ADAPTOR, %#x)", BliSrcAdaptorState);
+                }
+            }
+            break;
+#endif
         default:
             LOG_ALWAYS_FATAL("setParameter resample: bad param %d", param);
         }
@@ -702,20 +1517,31 @@ void AudioMixer::setParameter(int name, int target, int param, void *value)
             if (setVolumeRampVariables(*reinterpret_cast<float*>(value),
                     target == RAMP_VOLUME ? mState.frameCount : 0,
                     &track.auxLevel, &track.prevAuxLevel, &track.auxInc,
-                    &track.mAuxLevel, &track.mPrevAuxLevel, &track.mAuxInc)) {
+#ifdef MTK_AUDIO
+                    &track.mAuxLevel, &track.mPrevAuxLevel, &track.mAuxInc, &track.mPreAuxValid))
+#else
+                    &track.mAuxLevel, &track.mPrevAuxLevel, &track.mAuxInc))
+#endif
+            {
                 ALOGV("setParameter(%s, AUXLEVEL: %04x)",
                         target == VOLUME ? "VOLUME" : "RAMP_VOLUME", track.auxLevel);
                 invalidateState(1 << name);
             }
             break;
         default:
+            //ALOGD("%s, volume %f", __FUNCTION__, *reinterpret_cast<float*>(value));
             if ((unsigned)param >= VOLUME0 && (unsigned)param < VOLUME0 + MAX_NUM_VOLUMES) {
                 if (setVolumeRampVariables(*reinterpret_cast<float*>(value),
                         target == RAMP_VOLUME ? mState.frameCount : 0,
                         &track.volume[param - VOLUME0], &track.prevVolume[param - VOLUME0],
                         &track.volumeInc[param - VOLUME0],
                         &track.mVolume[param - VOLUME0], &track.mPrevVolume[param - VOLUME0],
-                        &track.mVolumeInc[param - VOLUME0])) {
+#ifdef MTK_AUDIO
+                        &track.mVolumeInc[param - VOLUME0], &track.mPreVolumeValid[param - VOLUME0]))
+#else
+                        &track.mVolumeInc[param - VOLUME0]))
+#endif
+                {
                     ALOGV("setParameter(%s, VOLUME%d: %04x)",
                             target == VOLUME ? "VOLUME" : "RAMP_VOLUME", param - VOLUME0,
                                     track.volume[param - VOLUME0]);
@@ -749,10 +1575,125 @@ void AudioMixer::setParameter(int name, int target, int param, void *value)
             }
             break;
 
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+        case DRC:
+            switch (param) {
+            case DEVICE:
+                track.setDRCHandler(valueInt, mSampleRate);
+                break;
+            case UPDATE:
+                track.updateDRCParam(mSampleRate);
+                break;
+            case RESET:
+                track.resetDRC();
+                break;
+            default:
+                LOG_FATAL("bad param");
+            }
+        break;
+#endif
+#ifdef MTK_BESSURROUND_ENABLE
+        case SURROUND:
+            switch (param) {
+            case DEVICE:
+                if (track.mSurroundMixer != NULL) {
+                    track.mSurroundMixer->SetBesSurroundDevice(valueInt);
+                }
+                break;
+            case BESSURND_ENABLE:
+            case BESSURND_ENABLE_RAMP:
+                ALOGV("setParameter(%s, %d)",
+                    param == BESSURND_ENABLE ? "BESSURND_ENABLE" : "BESSURND_ENABLE_RAMP", valueInt);
+                track.mSurroundEnable = valueInt;
+                //ALOGV("BESSURND_ENABLE %d",valueInt);
+                if (track.mSurroundMixer == NULL && track.mSurroundEnable == true) {
+                    ALOGV("init mSurroundMixer");
+                    mState.tracks[name].prepareTrackForSurroundMix();
+                }
+                if (track.mSurroundMixer != NULL) {
+                    ALOGV("setBesSurround On Off");
+                    track.mSurroundMixer->SetBesSurroundOnOFF(valueInt);
+                    if (param == BESSURND_ENABLE) {
+                        track.mSurroundMixer->SetNoRamp();
+                    }
+                }
+                break;
+            case BESSURND_MODE:
+                track.mSurroundMode = valueInt;
+                //ALOGV("BESSURND_MODE%d", valueInt);
+                if (track.mSurroundMixer != NULL) {
+                    track.mSurroundMixer->SetBesSurroundMode(valueInt);
+                }
+                break;
+            case RESET:
+                if (track.mSurroundMixer != NULL) {
+                    track.mSurroundMixer->ResetBesSurround();
+                }
+                break;
+            default:
+                LOG_FATAL("bad param");
+            }
+            break;
+#endif
+
     default:
         LOG_ALWAYS_FATAL("setParameter: bad target %d", target);
     }
 }
+#ifdef MTK_AUDIO
+bool AudioMixer::track_t::setResampler(uint32_t trackSampleRate, uint32_t devSampleRate)
+{
+    mDevSampleRate = devSampleRate;
+#ifndef FIXED_RESAMPLER
+    if (trackSampleRate != devSampleRate || resampler != NULL) {
+        if (sampleRate != trackSampleRate) {
+#endif
+            sampleRate = trackSampleRate;
+            if (resampler == NULL) {
+                ALOGV("Creating resampler from track %d Hz to device %d Hz",
+                        trackSampleRate, devSampleRate);
+                AudioResampler::src_quality quality;
+                // force lowest quality level resampler if use case isn't music or video
+                // FIXME this is flawed for dynamic sample rates, as we choose the resampler
+                // quality level based on the initial ratio, but that could change later.
+                // Should have a way to distinguish tracks with static ratios vs. dynamic ratios.
+                if (!((trackSampleRate == 44100 && devSampleRate == 48000) ||
+                      (trackSampleRate == 48000 && devSampleRate == 44100))) {
+                    quality = AudioResampler::DYN_LOW_QUALITY;
+                } else {
+                    quality = AudioResampler::DEFAULT_QUALITY;
+                }
+                quality = AudioResampler::DYN_HIGH_QUALITY; // Fixed to high quality
+                // TODO: Remove MONO_HACK. Resampler sees #channels after the downmixer
+                // but if none exists, it is the channel count (1 for mono).
+                int resamplerChannelCount = downmixerBufferProvider != NULL
+                    ? mMixerChannelCount : channelCount;
+                ALOGD("Creating resampler:"
+                        " format(%#x) channels(%d) devSampleRate(%u) quality(%d) resamplerChannelCount(%d)\n",
+                        mMixerInFormat, resamplerChannelCount, devSampleRate, quality, resamplerChannelCount);
+                resampler = AudioResampler::create(
+                        mMixerInFormat,
+                        resamplerChannelCount,
+                        devSampleRate, quality);
+            }
+#ifndef FIXED_RESAMPLER
+            else {
+                return false;
+            }
+#endif
+            return true;
+#ifndef FIXED_RESAMPLER
+        }
+    }
+
+#ifdef MTK_HIFI_AUDIO
+    initBliSrc();
+#endif
+
+    return false;
+#endif
+}
+#else
 
 bool AudioMixer::track_t::setResampler(uint32_t trackSampleRate, uint32_t devSampleRate)
 {
@@ -790,9 +1731,11 @@ bool AudioMixer::track_t::setResampler(uint32_t trackSampleRate, uint32_t devSam
     }
     return false;
 }
+#endif
 
 bool AudioMixer::track_t::setPlaybackRate(const AudioPlaybackRate &playbackRate)
 {
+// TODO: Do MTK timestretch support this function??
     if ((mTimestretchBufferProvider == NULL &&
             fabs(playbackRate.mSpeed - mPlaybackRate.mSpeed) < AUDIO_TIMESTRETCH_SPEED_MIN_DELTA &&
             fabs(playbackRate.mPitch - mPlaybackRate.mPitch) < AUDIO_TIMESTRETCH_PITCH_MIN_DELTA) ||
@@ -905,12 +1848,14 @@ void AudioMixer::setBufferProvider(int name, AudioBufferProvider* bufferProvider
 
 void AudioMixer::process()
 {
+    DRC_ALOGD("%s", __FUNCTION__);
     mState.hook(&mState);
 }
 
 
 void AudioMixer::process__validate(state_t* state)
 {
+    DRC_ALOGD("%s", __FUNCTION__);
     ALOGW_IF(!state->needsChanged,
         "in process__validate() but nothing's invalid");
 
@@ -937,6 +1882,10 @@ void AudioMixer::process__validate(state_t* state)
     // or remove altogether as an obsolete optimization.
     bool all16BitsStereoNoResample = true;
     bool resampling = false;
+#ifdef MTK_AUDIO
+    resampling = true;
+#endif
+
     bool volumeRamp = false;
     uint32_t en = state->enabledTracks;
     while (en) {
@@ -990,6 +1939,11 @@ void AudioMixer::process__validate(state_t* state)
                             t.mMixerInFormat, t.mMixerFormat);
                     ALOGV_IF((n & NEEDS_CHANNEL_COUNT__MASK) > NEEDS_CHANNEL_2,
                             "Track %d needs downmix", i);
+#ifdef MTK_AUDIO
+                    if (t.mMixerInFormat != AUDIO_FORMAT_PCM_16_BIT) {
+                        all16BitsStereoNoResample = false;
+                    }
+#endif
                 }
             }
         }
@@ -1006,15 +1960,22 @@ void AudioMixer::process__validate(state_t* state)
                 state->resampleTemp = new int32_t[MAX_NUM_CHANNELS * state->frameCount];
             }
             state->hook = process__genericResampling;
-        } else {
+        }
+// Fix dead code issue for Coverity
+#ifndef MTK_AUDIO
+        else {
             if (state->outputTemp) {
                 delete [] state->outputTemp;
                 state->outputTemp = NULL;
             }
+#ifdef MTK_BESSURROUND_ENABLE
+            // do not delete resample temp for Bessurround
+#else
             if (state->resampleTemp) {
                 delete [] state->resampleTemp;
                 state->resampleTemp = NULL;
             }
+#endif
             state->hook = process__genericNoResampling;
             if (all16BitsStereoNoResample && !volumeRamp) {
                 if (countActiveTracks == 1) {
@@ -1032,6 +1993,7 @@ void AudioMixer::process__validate(state_t* state)
                 }
             }
         }
+#endif
     }
 
     ALOGV("mixer configuration change: %d activeTracks (%08x) "
@@ -1085,6 +2047,16 @@ void AudioMixer::track__genericResample(track_t* t, int32_t* out, size_t outFram
         t->resampler->setVolume(UNITY_GAIN_FLOAT, UNITY_GAIN_FLOAT);
         memset(temp, 0, outFrameCount * t->mMixerChannelCount * sizeof(int32_t));
         t->resampler->resample(temp, outFrameCount, t->bufferProvider);
+        // add  BesSurround
+#ifdef MTK_BESSURROUND_ENABLE
+        if (t ->mSurroundMixer) {
+            memcpy_by_audio_format(temp, AUDIO_FORMAT_PCM_32_BIT, temp, AUDIO_FORMAT_PCM_16_BIT,
+                outFrameCount * t->channelCount);
+            t->mSurroundMixer->process(temp, (t->mDownMixBuffer), outFrameCount);
+            memcpy_by_audio_format(temp, AUDIO_FORMAT_PCM_16_BIT, (t->mDownMixBuffer), AUDIO_FORMAT_PCM_32_BIT,
+                outFrameCount * 2);
+        }
+#endif
         if (CC_UNLIKELY(t->volumeInc[0]|t->volumeInc[1]|t->auxInc)) {
             volumeRampStereo(t, out, outFrameCount, temp, aux);
         } else {
@@ -1095,6 +2067,15 @@ void AudioMixer::track__genericResample(track_t* t, int32_t* out, size_t outFram
             t->resampler->setVolume(UNITY_GAIN_FLOAT, UNITY_GAIN_FLOAT);
             memset(temp, 0, outFrameCount * MAX_NUM_CHANNELS * sizeof(int32_t));
             t->resampler->resample(temp, outFrameCount, t->bufferProvider);
+#ifdef MTK_BESSURROUND_ENABLE
+            if (t ->mSurroundMixer) {
+                memcpy_by_audio_format(temp, AUDIO_FORMAT_PCM_32_BIT, temp, AUDIO_FORMAT_PCM_16_BIT,
+                    outFrameCount * t->channelCount);
+                t->mSurroundMixer->process(temp, (t->mDownMixBuffer), outFrameCount);
+                memcpy_by_audio_format(temp, AUDIO_FORMAT_PCM_16_BIT, (t->mDownMixBuffer), AUDIO_FORMAT_PCM_32_BIT,
+                    outFrameCount * 2);
+            }
+#endif
             volumeRampStereo(t, out, outFrameCount, temp, aux);
         }
 
@@ -1102,8 +2083,20 @@ void AudioMixer::track__genericResample(track_t* t, int32_t* out, size_t outFram
         else {
             t->resampler->setVolume(t->mVolume[0], t->mVolume[1]);
             t->resampler->resample(out, outFrameCount, t->bufferProvider);
+#ifdef MTK_BESSURROUND_ENABLE
+            if (t ->mSurroundMixer) {
+                memcpy_by_audio_format(out, AUDIO_FORMAT_PCM_32_BIT, out, AUDIO_FORMAT_PCM_16_BIT,
+                    outFrameCount * t->channelCount);
+                t->mSurroundMixer->process(out, (t->mDownMixBuffer), outFrameCount);
+                memcpy_by_audio_format(out, AUDIO_FORMAT_PCM_16_BIT, (t->mDownMixBuffer), AUDIO_FORMAT_PCM_32_BIT,
+                    outFrameCount * 2);
+            }
+#endif
         }
     }
+#ifdef TIME_STRETCH_ENABLE
+    t->mTrackPlayed = 1;
+#endif
 }
 
 void AudioMixer::track__nop(track_t* t __unused, int32_t* out __unused,
@@ -1188,6 +2181,15 @@ void AudioMixer::track__16BitsStereo(track_t* t, int32_t* out, size_t frameCount
 {
     ALOGVV("track__16BitsStereo\n");
     const int16_t *in = static_cast<const int16_t *>(t->in);
+#ifdef MTK_BESSURROUND_ENABLE
+    if (t ->mSurroundMixer) {
+        memcpy_by_audio_format(temp, AUDIO_FORMAT_PCM_32_BIT, in, AUDIO_FORMAT_PCM_16_BIT,
+            frameCount * t->channelCount);
+        t->mSurroundMixer->process(temp, (t->mDownMixBuffer), frameCount);
+        memcpy_by_audio_format((int16_t*)in, AUDIO_FORMAT_PCM_16_BIT, (t->mDownMixBuffer), AUDIO_FORMAT_PCM_32_BIT,
+            frameCount * 2);
+    }
+#endif
 
     if (CC_UNLIKELY(aux != NULL)) {
         int32_t l;
@@ -1366,6 +2368,7 @@ void AudioMixer::track__16BitsMono(track_t* t, int32_t* out, size_t frameCount,
 // no-op case
 void AudioMixer::process__nop(state_t* state)
 {
+    DRC_ALOGD("%s", __FUNCTION__);
     ALOGVV("process__nop\n");
     uint32_t e0 = state->enabledTracks;
     while (e0) {
@@ -1411,13 +2414,20 @@ void AudioMixer::process__nop(state_t* state)
 // generic code without resampling
 void AudioMixer::process__genericNoResampling(state_t* state)
 {
+    DRC_ALOGD("%s", __FUNCTION__);
     ALOGVV("process__genericNoResampling\n");
     int32_t outTemp[BLOCKSIZE * MAX_NUM_CHANNELS] __attribute__((aligned(32)));
 
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+    int trackCount = 0;
+#endif
     // acquire each track's buffer
     uint32_t enabledTracks = state->enabledTracks;
     uint32_t e0 = enabledTracks;
     while (e0) {
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+        trackCount++;
+#endif
         const int i = 31 - __builtin_clz(e0);
         e0 &= ~(1<<i);
         track_t& t = state->tracks[i];
@@ -1459,6 +2469,13 @@ void AudioMixer::process__genericNoResampling(state_t* state)
                 if (CC_UNLIKELY(t.needs & NEEDS_AUX)) {
                     aux = t.auxBuffer + numFrames;
                 }
+
+#ifdef FULL_FRAMECOUNT
+                int8_t *tempBuffer = reinterpret_cast<int8_t*>(state->nonResampleTemp);
+                int channelCount = t.channelCount;
+                int32_t channelSize = channelCount * audio_bytes_per_sample(t.mMixerInFormat);
+                memset(tempBuffer, 0, BLOCKSIZE*channelSize);
+#endif
                 while (outFrames) {
                     // t.in == NULL can happen if the track was flushed just after having
                     // been enabled for mixing.
@@ -1469,13 +2486,22 @@ void AudioMixer::process__genericNoResampling(state_t* state)
                     }
                     size_t inFrames = (t.frameCount > outFrames)?outFrames:t.frameCount;
                     if (inFrames > 0) {
+#ifdef FULL_FRAMECOUNT
+                        int32_t sampleSize = inFrames * channelSize;
+                        memcpy(tempBuffer + (BLOCKSIZE - outFrames) * channelSize, t.in, sampleSize);
+                        t.in = ((int8_t *)t.in) + sampleSize;
+#else
                         t.hook(&t, outTemp + (BLOCKSIZE - outFrames) * t.mMixerChannelCount,
                                 inFrames, state->resampleTemp, aux);
+#endif
                         t.frameCount -= inFrames;
                         outFrames -= inFrames;
+
+#ifndef FULL_FRAMECOUNT
                         if (CC_UNLIKELY(aux != NULL)) {
                             aux += inFrames;
                         }
+#endif
                     }
                     if (t.frameCount == 0 && outFrames) {
                         t.bufferProvider->releaseBuffer(&t.buffer);
@@ -1491,14 +2517,50 @@ void AudioMixer::process__genericNoResampling(state_t* state)
                         t.frameCount = t.buffer.frameCount;
                     }
                 }
+#ifdef FULL_FRAMECOUNT
+                t.hook(&t, outTemp, BLOCKSIZE, state->nonResampleTemp, aux);
+                if (CC_UNLIKELY(aux != NULL)) {
+                    aux += BLOCKSIZE;
+                }
+#endif
             }
 
+            size_t framecount = BLOCKSIZE;
+
+#ifdef MTK_HIFI_AUDIO
+            framecount = framecount >> t1.mBliSrcAdaptorShift;
+#endif
+
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+            if (t1.mMixerFormat != AUDIO_FORMAT_PCM_16_BIT) {
+                // Track with Effect does not do limiter process.
+                applyLimiter(state, framecount, t1.mMixerInFormat, t1.mMixerChannelCount,
+                    t1.mDevSampleRate, (int32_t*)outTemp, trackCount);
+            }
+#endif
+
+#ifdef FULL_FRAMECOUNT
+            convertMixerFormat(out, t1.mMixerFormat, outTemp, t1.mMixerInFormat,
+                    framecount * t1.mMixerChannelCount);
+            //ALOGD("%s, framecount %d, mMixerChannelCount %d, mMixerFormat %d", __FUNCTION__, framecount, t1.mMixerChannelCount, t1.mMixerFormat);
+            //MixerDumpPcm(gaf_mixer_end_pcm, gaf_mixer_end_propty, gettid(), (int)out, out, framecount*t1.mMixerChannelCount*audio_bytes_per_sample(t1.mMixerFormat));
+            MixerDumpPcm(gaf_mixer_end_pcm, gaf_mixer_end_propty, getpid(), gettid(),
+                static_cast<int>(reinterpret_cast<uintptr_t>(out)), out,
+                framecount * t1.mMixerChannelCount * audio_bytes_per_sample(t1.mMixerFormat),
+                t1.mMixerFormat, t1.sampleRate, t1.mMixerChannelCount );
+
+            // TODO: fix ugly casting due to choice of out pointer type
+            out = reinterpret_cast<int32_t*>((uint8_t*)out
+                + framecount * t1.mMixerChannelCount
+                * audio_bytes_per_sample(t1.mMixerFormat));
+#else
             convertMixerFormat(out, t1.mMixerFormat, outTemp, t1.mMixerInFormat,
                     BLOCKSIZE * t1.mMixerChannelCount);
             // TODO: fix ugly casting due to choice of out pointer type
             out = reinterpret_cast<int32_t*>((uint8_t*)out
                     + BLOCKSIZE * t1.mMixerChannelCount
                         * audio_bytes_per_sample(t1.mMixerFormat));
+#endif
             numFrames += BLOCKSIZE;
         } while (numFrames < state->frameCount);
     }
@@ -1517,13 +2579,19 @@ void AudioMixer::process__genericNoResampling(state_t* state)
 // generic code with resampling
 void AudioMixer::process__genericResampling(state_t* state)
 {
+    DRC_ALOGD("%s", __FUNCTION__);
     ALOGVV("process__genericResampling\n");
     // this const just means that local variable outTemp doesn't change
     int32_t* const outTemp = state->outputTemp;
     size_t numFrames = state->frameCount;
-
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+    int trackCount = 0;
+#endif
     uint32_t e0 = state->enabledTracks;
     while (e0) {
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+        trackCount++;
+#endif
         // process by group of tracks with same output buffer
         // to optimize cache use
         uint32_t e1 = e0, e2 = e0;
@@ -1537,10 +2605,20 @@ void AudioMixer::process__genericResampling(state_t* state)
             if (CC_UNLIKELY(t2.mainBuffer != t1.mainBuffer)) {
                 e1 &= ~(1<<j);
             }
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+            else {
+                trackCount++;
+            }
+#endif
         }
         e0 &= ~(e1);
         int32_t *out = t1.mainBuffer;
+#ifdef MTK_BESSURROUND_ENABLE
+        memset(outTemp, 0, sizeof(*outTemp) * (t1.channelCount >= t1.mMixerChannelCount
+            ? t1.channelCount : t1.mMixerChannelCount) * state->frameCount);
+#else
         memset(outTemp, 0, sizeof(*outTemp) * t1.mMixerChannelCount * state->frameCount);
+#endif
         while (e1) {
             const int i = 31 - __builtin_clz(e1);
             e1 &= ~(1<<i);
@@ -1559,6 +2637,16 @@ void AudioMixer::process__genericResampling(state_t* state)
 
                 size_t outFrames = 0;
 
+#ifdef FULL_FRAMECOUNT
+                int8_t *tempBuffer = reinterpret_cast<int8_t*>(state->nonResampleTemp);
+                int channelCount = ((1 == t.channelCount) && (2 == t.mMixerChannelCount)) ? 1 : t.mMixerChannelCount;
+#ifdef MTK_BESSURROUND_ENABLE
+                channelCount = t.channelCount >= 2 ? t.channelCount : channelCount;
+#endif
+                ALOGVV("channelCount %d,  t.channelCount %d ", channelCount, t.channelCount);
+                int32_t channelSize = channelCount * audio_bytes_per_sample(t.mMixerInFormat);
+                memset(tempBuffer, 0, numFrames * channelSize);
+#endif
                 while (outFrames < numFrames) {
                     t.buffer.frameCount = numFrames - outFrames;
                     t.bufferProvider->getNextBuffer(&t.buffer);
@@ -1566,19 +2654,59 @@ void AudioMixer::process__genericResampling(state_t* state)
                     // t.in == NULL can happen if the track was flushed just after having
                     // been enabled for mixing.
                     if (t.in == NULL) break;
-
+#ifndef FULL_FRAMECOUNT
                     if (CC_UNLIKELY(aux != NULL)) {
                         aux += outFrames;
                     }
+#endif
+
+#ifdef FULL_FRAMECOUNT
+                    int32_t sampleSize = t.buffer.frameCount * channelSize;
+                    memcpy(tempBuffer+ outFrames * channelSize, t.in, sampleSize);
+                    t.in = ((int8_t *)t.in) + sampleSize;
+#else
                     t.hook(&t, outTemp + outFrames * t.mMixerChannelCount, t.buffer.frameCount,
                             state->resampleTemp, aux);
+#endif
                     outFrames += t.buffer.frameCount;
                     t.bufferProvider->releaseBuffer(&t.buffer);
                 }
+#ifdef FULL_FRAMECOUNT
+                t.hook(&t, outTemp, numFrames, state->nonResampleTemp, aux);
+                if (CC_UNLIKELY(aux != NULL)) {
+                    aux += numFrames;
+                }
+#endif
             }
         }
+
+        size_t framecount = numFrames;
+
+#ifdef MTK_HIFI_AUDIO
+        framecount = framecount >> t1.mBliSrcAdaptorShift;
+#endif
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+        if (t1.mMixerFormat != AUDIO_FORMAT_PCM_16_BIT) {
+            // Track with Effect does not do limiter process.
+            applyLimiter(state, framecount, t1.mMixerInFormat, t1.mMixerChannelCount,
+                t1.mDevSampleRate, (int32_t*)outTemp, trackCount);
+        }
+#endif
+#ifdef FULL_FRAMECOUNT
+        convertMixerFormat(out, t1.mMixerFormat,
+                outTemp, t1.mMixerInFormat, framecount * t1.mMixerChannelCount);
+#else
         convertMixerFormat(out, t1.mMixerFormat,
                 outTemp, t1.mMixerInFormat, numFrames * t1.mMixerChannelCount);
+#endif
+
+        //ALOGD("%s, framecount %d, mMixerChannelCount %d, mMixerFormat %d", __FUNCTION__, framecount, t1.mMixerChannelCount, t1.mMixerFormat);
+        //MixerDumpPcm(gaf_mixer_end_pcm, gaf_mixer_end_propty, gettid(), (int)out, out, framecount*t1.mMixerChannelCount*audio_bytes_per_sample(t1.mMixerFormat));
+        MixerDumpPcm(gaf_mixer_end_pcm, gaf_mixer_end_propty, getpid(), gettid(),
+            static_cast<int>(reinterpret_cast<uintptr_t>(out)), out,
+            framecount * t1.mMixerChannelCount * audio_bytes_per_sample(t1.mMixerFormat),
+            t1.mMixerFormat, t1.mDevSampleRate, t1.mMixerChannelCount );
+
     }
 }
 
@@ -1620,6 +2748,15 @@ void AudioMixer::process__OneTrack16BitsStereoNoResampling(state_t* state)
             return;
         }
         size_t outFrames = b.frameCount;
+#ifdef MTK_BESSURROUND_ENABLE
+        if (t.mSurroundMixer) {
+            memcpy_by_audio_format(state->resampleTemp, AUDIO_FORMAT_PCM_32_BIT, in, t.mMixerFormat,
+                outFrames * t.channelCount);
+            t.mSurroundMixer->process(state->resampleTemp, (t.mDownMixBuffer), outFrames);
+            memcpy_by_audio_format((void*)in, t.mMixerFormat, (t.mDownMixBuffer), AUDIO_FORMAT_PCM_32_BIT,
+                outFrames * 2);
+        }
+#endif
 
         switch (t.mMixerFormat) {
         case AUDIO_FORMAT_PCM_FLOAT:
@@ -1778,6 +2915,13 @@ void AudioMixer::volumeMix(TO *out, size_t outFrames,
 {
     if (USEFLOATVOL) {
         if (ramp) {
+#ifdef MTK_AUDIO
+            if (t->mVolumeInc[0] != 0) {
+                ALOGD("%s, stream %d, vol %f, volinc %f = %f", __FUNCTION__,
+                    t->mStreamType, t->mPrevVolume[0], t->mVolumeInc[0],
+                    t->mPrevVolume[0] + t->mVolumeInc[0] * outFrames);
+            }
+#endif
             volumeRampMulti<MIXTYPE>(t->mMixerChannelCount, out, outFrames, in, aux,
                     t->mPrevVolume, t->mVolumeInc, &t->prevAuxLevel, t->auxInc);
             if (ADJUSTVOL) {
@@ -1789,6 +2933,13 @@ void AudioMixer::volumeMix(TO *out, size_t outFrames,
         }
     } else {
         if (ramp) {
+#ifdef MTK_AUDIO
+            if (t->volumeInc[0] != 0) {
+                ALOGD("%s, stream %d, vol %d, volinc %d = %zu", __FUNCTION__,
+                    t->mStreamType, t->prevVolume[0], t->volumeInc[0],
+                    t->prevVolume[0] + t->volumeInc[0] * outFrames);
+            }
+#endif
             volumeRampMulti<MIXTYPE>(t->mMixerChannelCount, out, outFrames, in, aux,
                     t->prevVolume, t->volumeInc, &t->prevAuxLevel, t->auxInc);
             if (ADJUSTVOL) {
@@ -1813,13 +2964,24 @@ void AudioMixer::volumeMix(TO *out, size_t outFrames,
 template <int MIXTYPE, typename TO, typename TI, typename TA>
 void AudioMixer::process_NoResampleOneTrack(state_t* state)
 {
+    DRC_ALOGD("%s", __FUNCTION__);
     ALOGVV("process_NoResampleOneTrack\n");
     // CLZ is faster than CTZ on ARM, though really not sure if true after 31 - clz.
     const int i = 31 - __builtin_clz(state->enabledTracks);
     ALOG_ASSERT((1 << i) == state->enabledTracks, "more than 1 track enabled");
     track_t *t = &state->tracks[i];
+#ifndef MTK_BESSURROUND_ENABLE
     const uint32_t channels = t->mMixerChannelCount;
+#else
+    const uint32_t channels = t->channelCount;
+#endif
+
+#ifdef FULL_FRAMECOUNT
+    TI* out = reinterpret_cast<TI*>(state->nonResampleTemp);
+    TO* final_out = reinterpret_cast<TO*>(t->mainBuffer);
+#else
     TO* out = reinterpret_cast<TO*>(t->mainBuffer);
+#endif
     TA* aux = reinterpret_cast<TA*>(t->auxBuffer);
     const bool ramp = t->needsRamp();
 
@@ -1833,18 +2995,80 @@ void AudioMixer::process_NoResampleOneTrack(state_t* state)
         // in == NULL can happen if the track was flushed just after having
         // been enabled for mixing.
         if (in == NULL || (((uintptr_t)in) & 3)) {
+#ifdef FULL_FRAMECOUNT
+            memset(out, 0, numFrames
+                    * channels * audio_bytes_per_sample(t->mMixerInFormat));
+            memset(final_out, 0, numFrames
+                    * t->mMixerChannelCount * audio_bytes_per_sample(t->mMixerFormat));
+#else
             memset(out, 0, numFrames
                     * channels * audio_bytes_per_sample(t->mMixerFormat));
+#endif
             ALOGE_IF((((uintptr_t)in) & 3), "process_NoResampleOneTrack: bus error: "
                     "buffer %p track %p, channels %d, needs %#x",
                     in, t, t->channelCount, t->needs);
+#ifdef FULL_FRAMECOUNT
+            break;
+#else
             return;
+#endif
         }
 
+#ifdef FULL_FRAMECOUNT
+        // only all16BitsStereoNoResample can use process_NoResampleOneTrack(), so there no mono channel.
+        size_t outFrames = b.frameCount;
+        int32_t sampleCount = outFrames * channels;
+        memcpy(out, in, sampleCount * audio_bytes_per_sample(t->mMixerInFormat));
+        out += sampleCount;
+        numFrames -= b.frameCount;
+
+        // release buffer
+        t->bufferProvider->releaseBuffer(&b);
+    }
+    {
+        size_t outFrames = state->frameCount;
+        TO* out = reinterpret_cast<TO*>(t->mainBuffer);
+        const TI *in = reinterpret_cast<TI*>(state->nonResampleTemp);
+#else
         const size_t outFrames = b.frameCount;
+#endif
+
+#ifdef MTK_AUDIO
+#ifdef FULL_FRAMECOUNT
+        t->doPostProcessing<MIXTYPE>(state->nonResampleTemp, t->mMixerInFormat, outFrames);
+#else
+        t->doPostProcessing<MIXTYPE>(b.raw, t->mMixerInFormat, b.frameCount);
+#endif
+#endif
+
+#ifndef FULL_FRAMECOUNT
+        size_t outFrames = b.frameCount;
+#endif
+
+#ifdef MTK_HIFI_AUDIO
+        outFrames = outFrames >> t->mBliSrcAdaptorShift;
+#endif
+
         volumeMix<MIXTYPE, is_same<TI, float>::value, false> (
                 out, outFrames, in, aux, ramp, t);
+#ifdef FULL_FRAMECOUNT
+        if (aux != NULL) {
+            aux += channels;
+        }
+#endif
 
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+        if (t->mMixerFormat != AUDIO_FORMAT_PCM_16_BIT) {
+            // Track with Effect does not do limiter process.
+            applyLimiter(state, outFrames, t->mMixerFormat, t->mMixerChannelCount, t->sampleRate,
+                (int32_t*)out, 1);
+        }
+#endif
+        MixerDumpPcm(gaf_mixer_end_pcm, gaf_mixer_end_propty, getpid(), gettid(), (int)out, out,
+            outFrames * t->mMixerChannelCount * audio_bytes_per_sample(t->mMixerFormat),
+            t->mMixerFormat, t->sampleRate, t->mMixerChannelCount);
+
+#ifndef FULL_FRAMECOUNT
         out += outFrames * channels;
         if (aux != NULL) {
             aux += channels;
@@ -1853,11 +3077,18 @@ void AudioMixer::process_NoResampleOneTrack(state_t* state)
 
         // release buffer
         t->bufferProvider->releaseBuffer(&b);
+#endif
     }
     if (ramp) {
         t->adjustVolumeRamp(aux != NULL, is_same<TI, float>::value);
     }
+#ifdef TIME_STRETCH_ENABLE
+    t->mTrackPlayed = 1;
+#endif
 }
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+static inline int32_t clamp4_27(int32_t sample);
+#endif
 
 /* This track hook is called to do resampling then mixing,
  * pulling from the track's upstream AudioBufferProvider.
@@ -1867,13 +3098,21 @@ void AudioMixer::process_NoResampleOneTrack(state_t* state)
  * TI: int32_t (Q4.27) or int16_t (Q0.15) or float
  * TA: int32_t (Q4.27)
  */
+int dump_sample  = 0;
 template <int MIXTYPE, typename TO, typename TI, typename TA>
 void AudioMixer::track__Resample(track_t* t, TO* out, size_t outFrameCount, TO* temp, TA* aux)
 {
+    DRC_ALOGD("%s", __FUNCTION__);
     ALOGVV("track__Resample\n");
     t->resampler->setSampleRate(t->sampleRate);
     const bool ramp = t->needsRamp();
-    if (ramp || aux != NULL) {
+
+#ifdef MTK_AUDIO
+    if (1)
+#else
+    if (ramp || aux != NULL)
+#endif
+    {
         // if ramp:        resample with unity gain to temp buffer and scale/mix in 2nd step.
         // if aux != NULL: resample with unity gain to temp buffer then apply send level.
 
@@ -1881,13 +3120,66 @@ void AudioMixer::track__Resample(track_t* t, TO* out, size_t outFrameCount, TO* 
         memset(temp, 0, outFrameCount * t->mMixerChannelCount * sizeof(TO));
         t->resampler->resample((int32_t*)temp, outFrameCount, t->bufferProvider);
 
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+        if ((t->mMixerInFormat == AUDIO_FORMAT_PCM_16_BIT) && t->checkDRCEnable()) {
+            ALOGD(" t->mMixerFormat == AUDIO_FORMAT_PCM_16_BIT");
+            size_t i;
+            int* ptr = (int*)temp;
+            int* ptr_out = (int*)temp;
+            int resamplerChannelCount = t->downmixerBufferProvider != NULL
+                ? t->mMixerChannelCount : t->channelCount;
+            resamplerChannelCount = resamplerChannelCount == 1 ? 2 : resamplerChannelCount;
+            for (i = 0; i < outFrameCount * resamplerChannelCount; i++) {
+                int32_t nl = (*ptr++);
+                *ptr_out++ = (clamp4_27(nl) << 4);
+            }
+        }
+#endif
+#ifdef MTK_AUDIO
+        t->doPostProcessing<MIXTYPE>(temp, (AUDIO_FORMAT_PCM_16_BIT == t->mMixerInFormat
+            ? AUDIO_FORMAT_PCM_32_BIT : t->mMixerInFormat), outFrameCount);
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+        if (t->mMixerInFormat == AUDIO_FORMAT_PCM_16_BIT && t->checkDRCEnable()) {
+            size_t i;
+            int* ptr = (int*)temp;
+            int* ptr_out = (int*)temp;
+            int resamplerChannelCount = t->downmixerBufferProvider != NULL
+                ? t->mMixerChannelCount : t->channelCount;
+            resamplerChannelCount = resamplerChannelCount == 1 ? 2 : resamplerChannelCount;
+            for (i = 0; i < outFrameCount * resamplerChannelCount; i++) {
+                int32_t nl =(*ptr++);
+                nl = (nl + (1 << 3)) >> 4;
+                *ptr_out++ = nl ;
+            }
+        }
+#endif
+#endif
+
+#ifdef MTK_HIFI_AUDIO
+        outFrameCount = outFrameCount >> t->mBliSrcAdaptorShift;
+#endif
+
         volumeMix<MIXTYPE, is_same<TI, float>::value, true>(
                 out, outFrameCount, temp, aux, ramp, t);
 
     } else { // constant volume gain
         t->resampler->setVolume(t->mVolume[0], t->mVolume[1]);
         t->resampler->resample((int32_t*)out, outFrameCount, t->bufferProvider);
+#ifdef MTK_BESSURROUND_ENABLE
+        if (t ->mSurroundMixer) {
+            memcpy_by_audio_format(out, AUDIO_FORMAT_PCM_32_BIT, out,
+                is_same<TI, int16_t>::value ? AUDIO_FORMAT_PCM_16_BIT : AUDIO_FORMAT_PCM_FLOAT,
+                outFrameCount * t->channelCount);
+            t->mSurroundMixer->process((int32_t*)out, (t->mDownMixBuffer), outFrameCount);
+            memcpy_by_audio_format(out, is_same<TI,
+                int16_t>::value ? AUDIO_FORMAT_PCM_16_BIT : AUDIO_FORMAT_PCM_FLOAT,
+                (t->mDownMixBuffer), AUDIO_FORMAT_PCM_32_BIT, outFrameCount * 2);
+        }
+#endif
     }
+#ifdef TIME_STRETCH_ENABLE
+    t->mTrackPlayed = 1;
+#endif
 }
 
 /* This track hook is called to mix a track, when no resampling is required.
@@ -1902,16 +3194,36 @@ template <int MIXTYPE, typename TO, typename TI, typename TA>
 void AudioMixer::track__NoResample(track_t* t, TO* out, size_t frameCount,
         TO* temp __unused, TA* aux)
 {
+    DRC_ALOGD("%s", __FUNCTION__);
     ALOGVV("track__NoResample\n");
+
+#ifdef FULL_FRAMECOUNT
+    const TI *in = reinterpret_cast<const TI *>(temp);
+#else
     const TI *in = static_cast<const TI *>(t->in);
+#endif
+
+#ifdef MTK_AUDIO
+    void *buffer = static_cast<void *>(temp);
+    t->doPostProcessing<MIXTYPE>(buffer, t->mMixerInFormat, frameCount);
+#endif
+
+#ifdef MTK_HIFI_AUDIO
+    frameCount = frameCount >> t->mBliSrcAdaptorShift;
+#endif
 
     volumeMix<MIXTYPE, is_same<TI, float>::value, true>(
             out, frameCount, in, aux, t->needsRamp(), t);
 
     // MIXTYPE_MONOEXPAND reads a single input channel and expands to NCHAN output channels.
     // MIXTYPE_MULTI reads NCHAN input channels and places to NCHAN output channels.
+#ifndef FULL_FRAMECOUNT
     in += (MIXTYPE == MIXTYPE_MONOEXPAND) ? frameCount : frameCount * t->mMixerChannelCount;
     t->in = in;
+#endif
+#ifdef TIME_STRETCH_ENABLE
+    t->mTrackPlayed = 1;
+#endif
 }
 
 /* The Mixer engine generates either int32_t (Q4_27) or float data.
@@ -1960,7 +3272,12 @@ void AudioMixer::convertMixerFormat(void *out, audio_format_t mixerOutFormat,
 AudioMixer::hook_t AudioMixer::getTrackHook(int trackType, uint32_t channelCount,
         audio_format_t mixerInFormat, audio_format_t mixerOutFormat __unused)
 {
-    if (!kUseNewMixer && channelCount == FCC_2 && mixerInFormat == AUDIO_FORMAT_PCM_16_BIT) {
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    if (0)
+#else
+    if (!kUseNewMixer && channelCount == FCC_2 && mixerInFormat == AUDIO_FORMAT_PCM_16_BIT)
+#endif
+    {
         switch (trackType) {
         case TRACKTYPE_NOP:
             return track__nop;
@@ -2039,7 +3356,12 @@ AudioMixer::process_hook_t AudioMixer::getProcessHook(int processType, uint32_t 
         LOG_ALWAYS_FATAL("bad processType: %d", processType);
         return NULL;
     }
-    if (!kUseNewMixer && channelCount == FCC_2 && mixerInFormat == AUDIO_FORMAT_PCM_16_BIT) {
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    if (0)
+#else
+    if (!kUseNewMixer && channelCount == FCC_2 && mixerInFormat == AUDIO_FORMAT_PCM_16_BIT)
+#endif
+    {
         return process__OneTrack16BitsStereoNoResampling;
     }
     LOG_ALWAYS_FATAL_IF(channelCount > MAX_NUM_CHANNELS);
@@ -2078,4 +3400,579 @@ AudioMixer::process_hook_t AudioMixer::getProcessHook(int processType, uint32_t 
 }
 
 // ----------------------------------------------------------------------------
+
+// MTK Add start
+#ifdef MTK_AUDIO
+#ifdef MTK_AUDIOMIXER_ENABLE_LIMITER
+void AudioMixer::applyLimiter(state_t* state, size_t framecount, audio_format_t MixerInFormat,
+    uint32_t MixerChannelCount, uint32_t sampleRate, int32_t* outTemp, int trackCount)
+{
+    if (!kUseFloat || !mLimiterEnable) {
+        // Limiter only support floating AudioMixer
+        return;
+    }
+    Limiter_RuntimeParam param;
+    uint32_t inSize, outSize;
+
+    if (trackCount > 1 && state->mLimiter_status.State == LMTR_BYPASS_STATE) {
+        state->mLimiter_status.State = LMTR_NORMAL_STATE;
+
+        param.Command = LMTR_TO_NORMAL_STATE;
+        Limiter_SetParameters(state->mpLimiterObj, &param);
+        ALOGV("limiter switch to LMTR_NORMAL_STATE");
+    } else if (trackCount <= 1 && state->mLimiter_status.State == LMTR_NORMAL_STATE) {
+        state->mLimiter_status.State = LMTR_BYPASS_STATE;
+        param.Command = LMTR_TO_BYPASS_STATE;
+        Limiter_SetParameters(state->mpLimiterObj, &param);
+        ALOGV("limiter switch to LMTR_BYPASS_STATE");
+    }
+
+    inSize = framecount * MixerChannelCount * 4; // always 4 byte.
+    outSize = inSize;
+
+    audio_format_t DumpFormat;
+    unsigned int Limiter_PCM_Format;
+
+    if (MixerInFormat == AUDIO_FORMAT_PCM_16_BIT) {
+        DumpFormat = AUDIO_FORMAT_PCM_8_24_BIT;
+        Limiter_PCM_Format = LMTR_IN_Q5P27_OUT_Q5P27;
+    } else {
+        DumpFormat = AUDIO_FORMAT_PCM_FLOAT;
+        Limiter_PCM_Format = LMTR_IN_FLOAT32_OUT_FLOAT32;
+    }
+
+    MixerDumpPcm(gaf_mixer_limin_pcm_before, gaf_mixer_limin_propty, getpid(), gettid(), 0, outTemp, inSize,
+        DumpFormat, sampleRate, MixerChannelCount );
+
+    if (state->mLimiter_status.PCM_Format != Limiter_PCM_Format) {
+        state->mLimiter_status.PCM_Format = Limiter_PCM_Format;
+        param.Command = LMTR_CHANGE_PCM_FORMAT;
+        param.PCM_Format = Limiter_PCM_Format;
+        Limiter_SetParameters(state->mpLimiterObj, &param);
+    }
+
+    int err = Limiter_Process(state->mpLimiterObj, (char *)state->mpLimiterTempBuffer,
+                              (void *)outTemp, &inSize,
+                              (void *)outTemp, &outSize);
+    if (err < 0) {
+        ALOGE("Limiter_Process() error: %d", err);
+    }
+
+    MixerDumpPcm(gaf_mixer_limin_pcm_after, gaf_mixer_limin_propty, getpid(), gettid(), 0, outTemp, outSize,
+        DumpFormat, sampleRate, MixerChannelCount );
+}
+#else
+void AudioMixer::applyLimiter(state_t* state __unused, size_t framecount __unused, audio_format_t MixerInFormat __unused,
+    uint32_t MixerChannelCount __unused, uint32_t sampleRate __unused, int32_t* outTemp __unused, int trackCount __unused)
+{
+}
+#endif
+
+#ifdef MTK_CROSSMOUNT_MULTI_CH_SUPPORT
+template <typename TI>
+inline void CopyChannel(void *ptr, size_t frameCount, AudioMixer::CROSS_MOUNT_SPEAKER_ROLE SpeakerRole)
+{
+    TI *buffer = (TI *)ptr;
+    if (SpeakerRole == AudioMixer::CROSS_MOUNT_SPEAKER_ROLE_L_ONLY) {
+        while (frameCount) {
+            buffer[frameCount - 1] = buffer[frameCount - 2]; // Right Channel = Left Channel
+            frameCount -= 2;
+        }
+    } else if (SpeakerRole == AudioMixer::CROSS_MOUNT_SPEAKER_ROLE_R_ONLY) {
+        while (frameCount) {
+            buffer[frameCount - 2] = buffer[frameCount - 1]; // Left Channel = Right Channel
+            frameCount -= 2;
+        }
+    }
+}
+#endif
+
+template <int MIXTYPE>
+bool AudioMixer::track_t::doPostProcessing(void *buffer, audio_format_t format, size_t frameCount)
+{
+    DRC_ALOGD("+%s, mStreamType %d", __FUNCTION__, mStreamType);
+
+    int32_t process_channel = (MIXTYPE == MIXTYPE_MONOEXPAND ? channelCount : mMixerChannelCount);
+
+    if (mStreamType == AUDIO_STREAM_PATCH) {
+#ifdef MTK_CROSSMOUNT_MULTI_CH_SUPPORT
+        if (mCrossMountLocalPlayback && process_channel == 2) {
+            if (format == AUDIO_FORMAT_PCM_16_BIT) {
+                CopyChannel<int16_t>(buffer, frameCount * process_channel, mCrossMountSpeakerRole);
+            } else {
+                CopyChannel<int32_t>(buffer, frameCount * process_channel, mCrossMountSpeakerRole);
+            }
+        }
+#endif
+        return true;
+    }
+
+    bool SurroundMix_enable = false;
+#ifdef MTK_BESSURROUND_ENABLE
+    SurroundMix_enable = (MIXTYPE != MIXTYPE_MONOEXPAND) && (mSurroundMixer) && (channelCount != 1);
+#endif
+
+#ifdef DEBUG_AUDIO_PCM_FOR_TEST
+    {
+        process_channel = SurroundMix_enable ? channelCount : process_channel;
+        String8 fileName = String8::format("%s.beforePostProcess.pid%d.tid%d", gaf_mixertest_in_pcm, getpid(), gettid());
+        AudioDump::threadDump(fileName.string(), buffer,
+            frameCount * process_channel * audio_bytes_per_sample(format), gaf_mixertest_in_propty,
+            format, mDevSampleRate, process_channel);
+    }
+#endif
+
+    bool DRC_enable = false;
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+    DRC_enable = checkDRCEnable();
+#endif
+
+    if ((FCC_2 == mMixerChannelCount) &&
+        (SurroundMix_enable || DRC_enable)) {
+        DRC_ALOGD("%s, format %d, channel %d %d, frameCount %d, MIXTYPE %d", __FUNCTION__, format,
+            mMixerChannelCount, channelCount, frameCount, MIXTYPE);
+        if (!((AUDIO_FORMAT_PCM_32_BIT == format) || (AUDIO_FORMAT_PCM_16_BIT == format) ||
+              (AUDIO_FORMAT_PCM_FLOAT == format))) {
+            ALOGE("%s, format not support!!", __FUNCTION__);
+            return false;
+        }
+
+        // format wrapper start, if need
+        audio_format_t process_format = format;
+        void* processBuffer = buffer;
+
+        if (SurroundMix_enable || AUDIO_FORMAT_PCM_FLOAT == process_format) {
+#ifdef MTK_BESSURROUND_ENABLE
+            processBuffer = SurroundMix_enable ? mDownMixBuffer : buffer;
+            process_channel = SurroundMix_enable ? channelCount : process_channel;
+#endif
+            ALOGV("%s , frameCount (%zu) ,t->channelCount(%d) process_channel (%d) process_format (%d)",
+                __FUNCTION__, frameCount, channelCount, process_channel, process_format);
+            memcpy_by_audio_format(processBuffer, AUDIO_FORMAT_PCM_32_BIT, buffer, process_format,
+                frameCount * process_channel);
+            process_format = AUDIO_FORMAT_PCM_32_BIT;
+
+            /*#ifdef DEBUG_AUDIO_PCM_FOR_TEST
+            {
+                String8 fileName = String8::format("%s.to32bit", gaf_mixertest_in_pcm );
+                AudioDump::threadDump(fileName.string(), processBuffer,
+                    frameCount*process_channel *audio_bytes_per_sample(process_format), gaf_mixertest_in_propty,
+                    process_format, mDevSampleRate, process_channel);
+            }
+            #endif*/
+        }
+
+        // BesSurround process
+#ifdef MTK_BESSURROUND_ENABLE
+        if (SurroundMix_enable) {
+            void *pBufferAfterBliSrc = NULL;
+            uint32_t bytesAfterBliSrc = 0;
+
+            ALOGV(" %s, surroundMix process", __FUNCTION__);
+
+#ifdef MTK_HIFI_AUDIO
+            size_t frameCountAdaptor = frameCount;
+            if (OUTPUT_RATE_192 == mDevSampleRate || OUTPUT_RATE_176_4 == mDevSampleRate) {
+                frameCountAdaptor = frameCountAdaptor >> 2;
+            } else if (OUTPUT_RATE_96 == mDevSampleRate || OUTPUT_RATE_88_2 == mDevSampleRate) {
+                frameCountAdaptor = frameCountAdaptor >> 1;
+            }
+            doBliSrc(mBliSrcDown, processBuffer, frameCount * process_channel * audio_bytes_per_sample(process_format),
+                &pBufferAfterBliSrc, &bytesAfterBliSrc);
+            mSurroundMixer->process((int32_t*)pBufferAfterBliSrc, (int32_t*)buffer, frameCountAdaptor);
+            doBliSrc(mBliSrcUp, buffer, frameCountAdaptor * mMixerChannelCount * audio_bytes_per_sample(process_format),
+                &pBufferAfterBliSrc, &bytesAfterBliSrc);
+            ALOGV("%s, frameCount %zu, frameCountAdaptor %zu, process_channel %d, bytesAfterBliSrc %d",
+                __FUNCTION__, frameCount, frameCountAdaptor, process_channel, bytesAfterBliSrc);
+            process_channel = mMixerChannelCount;
+            if (pBufferAfterBliSrc != buffer && 0 != bytesAfterBliSrc) {
+                memset(buffer, 0, bytesAfterBliSrc);
+                memcpy(buffer, pBufferAfterBliSrc, bytesAfterBliSrc);
+            }
+#else
+            mSurroundMixer->process(mDownMixBuffer, (int32_t*)buffer, frameCount);
+            process_channel = mMixerChannelCount;
+#endif
+#ifdef DEBUG_AUDIO_PCM_FOR_TEST
+            {
+                String8 fileName = String8::format("%s.surroundProcess.pid%d.tid%d", gaf_mixertest_in_pcm, getpid(), gettid());
+                AudioDump::threadDump(fileName.string(), buffer,
+                    frameCount * mMixerChannelCount * audio_bytes_per_sample(process_format), gaf_mixertest_in_propty,
+                    process_format, mDevSampleRate, mMixerChannelCount);
+            }
+#endif
+        }
+#endif
+
+#if 0 // Only work on duplicated thread with cross mount. So here is no need.
+#ifdef MTK_CROSSMOUNT_MULTI_CH_SUPPORT
+        if (mCrossMountLocalPlayback && process_channel == 2) {
+            if (process_format == AUDIO_FORMAT_PCM_16_BIT) {
+                CopyChannel<int16_t>(buffer, frameCount * process_channel, mCrossMountSpeakerRole );
+            } else {
+                CopyChannel<int32_t>(buffer, frameCount * process_channel, mCrossMountSpeakerRole );
+            }
+        }
+#endif
+#endif
+
+        // DRC process
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+        if ((frameCount >= 512) && (frameCount % 512 == 0)) { // DRC need at least 512 frameCount.
+            int32_t sampleSize = frameCount * process_channel * audio_bytes_per_sample(process_format);
+            if (format == AUDIO_FORMAT_PCM_16_BIT && process_format != AUDIO_FORMAT_PCM_16_BIT) {
+                int32_t sampleCount = frameCount * process_channel;
+                sampleSize = frameCount * process_channel * audio_bytes_per_sample(format);
+                memcpy_by_audio_format(buffer, format, buffer, process_format, sampleCount);
+                process_format = AUDIO_FORMAT_PCM_16_BIT;
+            }
+            applyDRC((void *)buffer, sampleSize, mState->pDRCTempBuffer, process_format, process_channel);
+        }
+#endif
+
+        // format wrapper end, if need
+        if (process_format != format) {
+            int32_t sampleCount = frameCount * (MIXTYPE == MIXTYPE_MONOEXPAND ? channelCount : mMixerChannelCount);
+
+            ALOGVV("frameCount(%d), sampleCount (%d) format(%d)", frameCount, sampleCount, format);
+            memcpy_by_audio_format(buffer, format, buffer, process_format, sampleCount);
+
+            /*#ifdef DEBUG_AUDIO_PCM_FOR_TEST
+            {
+                String8 fileName = String8::format("%s.toOriginalFormat", gaf_mixertest_in_pcm );
+                AudioDump::threadDump(fileName.string(), buffer,
+                    frameCount*mMixerChannelCount *audio_bytes_per_sample(format), gaf_mixertest_in_propty,
+                    format, mDevSampleRate, mMixerChannelCount);
+            }
+            #endif*/
+        }
+
+#if 0//def DEBUG_AUDIO_PCM_FOR_TEST
+        const int SIZE = 256;
+        char fileName[SIZE];
+        sprintf(fileName,"%s_%p.pcm", gaf_mixertest_in_pcm, this);
+        //ALOGD("dump frameCount(%d)* t->channelCount(%d)*sizeof(int),  = %d", frameCount, channelCount, frameCount* channelCount*sizeof(int));
+        AudioDump::dump(fileName, buffer, frameCount * channelCount * sizeof(int), gaf_mixertest_in_propty);
+#endif
+    }
+
+#ifdef MTK_HIFI_AUDIO
+    if (mBliSrcAdaptorState && (OUTPUT_RATE_192 == mDevSampleRate || OUTPUT_RATE_96 == mDevSampleRate ||
+        OUTPUT_RATE_176_4 == mDevSampleRate || OUTPUT_RATE_88_2 == mDevSampleRate)) {
+        void *pBufferAfterBliSrc = NULL;
+        uint32_t bytesAfterBliSrc = 0;
+        size_t frameCountAdaptor = frameCount;
+
+        mBliSrcAdaptorShift = 0;
+        if (OUTPUT_RATE_192 == mDevSampleRate || OUTPUT_RATE_176_4 == mDevSampleRate) {
+            mBliSrcAdaptorShift = 2;
+        } else {
+            mBliSrcAdaptorShift = 1;
+        }
+        memcpy_by_audio_format(buffer, AUDIO_FORMAT_PCM_32_BIT, buffer, format, frameCountAdaptor * process_channel);
+
+        doBliSrc(mBliSrcAdaptor, buffer, frameCount * process_channel * audio_bytes_per_sample(AUDIO_FORMAT_PCM_32_BIT),
+            &pBufferAfterBliSrc, &bytesAfterBliSrc);
+        frameCountAdaptor = frameCountAdaptor >> mBliSrcAdaptorShift;
+        memcpy_by_audio_format(buffer, format, pBufferAfterBliSrc, AUDIO_FORMAT_PCM_32_BIT,
+            frameCountAdaptor * process_channel);
+    } else {
+        mBliSrcAdaptorShift = 0;
+    }
+#endif
+
+    DRC_ALOGD("-%s", __FUNCTION__);
+    return true;
+}
+#else
+template <int MIXTYPE>
+bool AudioMixer::track_t::doPostProcessing(void *buffer __unused, audio_format_t format __unused, size_t frameCount __unused)
+{
+    return true;
+}
+#endif
+
+#ifdef MTK_HIFI_AUDIO
+
+#define kBliSrcOutputBufferSize 0x40000  // 64k
+
+status_t AudioMixer::track_t::initBliSrc()
+{
+    if (mBliSrcDown != NULL || mBliSrcUp != NULL || mBliSrcAdaptor != NULL ||mBliSrcOutputBuffer != NULL) {
+        return NO_ERROR;
+    }
+
+    if (OUTPUT_RATE_192 == mDevSampleRate || OUTPUT_RATE_96 == mDevSampleRate ||
+        OUTPUT_RATE_176_4 == mDevSampleRate || OUTPUT_RATE_88_2 == mDevSampleRate) {
+        uint32_t destSampleRate = (OUTPUT_RATE_192 == mDevSampleRate || OUTPUT_RATE_96 == mDevSampleRate)
+            ? OUTPUT_RATE_48 : OUTPUT_RATE_44_1;
+
+        ALOGD("%s start : mDevSampleRate %d, destSampleRate %d", __FUNCTION__, mDevSampleRate, destSampleRate);
+
+        mBliSrcDown = new MtkAudioSrc(mDevSampleRate, channelCount, destSampleRate, channelCount, SRC_IN_Q1P31_OUT_Q1P31);
+        mBliSrcUp   = new MtkAudioSrc(destSampleRate, FCC_2       , mDevSampleRate, FCC_2       , SRC_IN_Q1P31_OUT_Q1P31);
+
+        mBliSrcDown->multiChannelOpen();
+        mBliSrcUp->multiChannelOpen();
+
+        mBliSrcAdaptor = new MtkAudioSrc(mDevSampleRate, FCC_2, destSampleRate, FCC_2, SRC_IN_Q1P31_OUT_Q1P31);
+        mBliSrcAdaptor->multiChannelOpen();
+
+        mBliSrcOutputBuffer = (char*)new int32_t[MAX_NUM_CHANNELS * frameCount];
+        mBliSrcOutputBufferSize = MAX_NUM_CHANNELS * frameCount * 4;
+    }
+
+    //ALOGD("%s end, mBliSrcDown 0x%x, mBliSrcUp 0x%x, mBliSrcAdaptor 0x%x, mBliSrcOutputBuffer 0x%x, size %d", __FUNCTION__, mBliSrcDown, mBliSrcUp, mBliSrcAdaptor, mBliSrcOutputBuffer, MAX_NUM_CHANNELS*mState->frameCount);
+    return NO_ERROR;
+}
+
+status_t AudioMixer::track_t::deinitBliSrc()
+{
+    //ALOGD("%s", __FUNCTION__);
+
+    // deinit BLI SRC if need
+    if (mBliSrcDown != NULL) {
+        mBliSrcDown->close();
+        delete mBliSrcDown;
+        mBliSrcDown = NULL;
+    }
+
+    if (mBliSrcUp != NULL) {
+        mBliSrcUp->close();
+        delete mBliSrcUp;
+        mBliSrcUp = NULL;
+    }
+
+    if (mBliSrcAdaptor != NULL) {
+        mBliSrcAdaptor->close();
+        delete mBliSrcAdaptor;
+        mBliSrcAdaptor = NULL;
+    }
+
+    if (mBliSrcOutputBuffer != NULL) {
+        delete[] mBliSrcOutputBuffer;
+        mBliSrcOutputBuffer = NULL;
+        mBliSrcOutputBufferSize = 0;
+    }
+
+    return NO_ERROR;
+}
+
+status_t AudioMixer::track_t::doBliSrc(MtkAudioSrc* mBliSrc, void *pInBuffer, uint32_t inBytes,
+    void **ppOutBuffer, uint32_t *pOutBytes)
+{
+    if (mBliSrc == NULL) { // No need SRC
+        *ppOutBuffer = pInBuffer;
+        *pOutBytes = inBytes;
+    } else {
+        char *p_read = (char *)pInBuffer;
+        uint32_t num_raw_data_left = inBytes;
+        uint32_t num_converted_data = mBliSrcOutputBufferSize; // max convert num_free_space
+
+        uint32_t consumed = num_raw_data_left;
+
+        //ALOGD("%s, mBliSrc 0x%x, p_read 0x%x, size %d, buffer 0x%x", __FUNCTION__, mBliSrc, p_read, num_raw_data_left, mBliSrcOutputBuffer);
+        mBliSrc->multiChannelProcess((int16_t *)p_read, &num_raw_data_left,
+                         (int16_t *)mBliSrcOutputBuffer, &num_converted_data);
+        consumed -= num_raw_data_left;
+        p_read += consumed;
+
+        //ALOGV("%s(), num_raw_data_left = %u, num_converted_data = %u",
+        //      __FUNCTION__, num_raw_data_left, num_converted_data);
+
+        if (num_raw_data_left > 0) {
+            ALOGW("%s(), num_raw_data_left(%u) > 0", __FUNCTION__, num_raw_data_left);
+            ASSERT(num_raw_data_left == 0);
+        }
+
+        *ppOutBuffer = mBliSrcOutputBuffer;
+        *pOutBytes = num_converted_data;
+    }
+
+    ASSERT(*ppOutBuffer != NULL && *pOutBytes != 0);
+    return NO_ERROR;
+}
+#endif
+
+#ifdef MTK_AUDIOMIXER_ENABLE_DRC
+
+bool AudioMixer::mUIDRCEnable = true;
+
+void AudioMixer::releaseDRC(int name)
+{
+    name -= TRACK0;
+    track_t& track(mState.tracks[name]);
+
+    if (track.mpDRCObj) {
+        track.mpDRCObj->close();
+        track.mDRCState = false;
+        if (NULL != track.mpDRCObj) {
+            delete track.mpDRCObj;
+            track.mpDRCObj = NULL;
+        }
+    }
+}
+
+void AudioMixer::track_t::resetDRC()
+{
+    ALOGD("%s", __FUNCTION__);
+    if (mpDRCObj) {
+        mpDRCObj->resetBuffer();
+    }
+}
+
+void AudioMixer::track_t::updateDRCParam(int devSampleRate)
+{
+    if (mpDRCObj) {
+        mpDRCObj->resetBuffer();
+        mpDRCObj->close();
+
+        mpDRCObj->setParameter(BLOUD_PAR_SET_SAMPLE_RATE, (void *)(uintptr_t)devSampleRate);
+
+        // DRC will always receive 2ch data.
+        if (!doesResample() &&
+            mMixerChannelMask == AUDIO_CHANNEL_OUT_STEREO &&
+            channelMask == AUDIO_CHANNEL_OUT_MONO) {
+            mpDRCObj->setParameter(BLOUD_PAR_SET_CHANNEL_NUMBER, (void *)BLOUD_HD_MONO);
+        } else {
+            mpDRCObj->setParameter(BLOUD_PAR_SET_CHANNEL_NUMBER, (void *)BLOUD_HD_STEREO);
+        }
+
+        if (AUDIO_FORMAT_PCM_16_BIT == mMixerInFormat && !doesResample()) {
+            mpDRCObj->setParameter(BLOUD_PAR_SET_PCM_FORMAT, (void *)BLOUD_IN_Q1P15_OUT_Q1P15);
+        } else {
+            mpDRCObj->setParameter(BLOUD_PAR_SET_PCM_FORMAT, (void *)BLOUD_IN_Q1P31_OUT_Q1P31);
+        }
+
+        //mpDRCObj->setParameter(BLOUD_PAR_SET_FILTER_TYPE, (void *)AUDIO_COMP_FLT_AUDIO);
+        mpDRCObj->setParameter(BLOUD_PAR_SET_USE_DEFAULT_PARAM_FORCE_RELOAD, (void *)NULL);
+        mpDRCObj->setParameter(BLOUD_PAR_SET_WORK_MODE, (void *)AUDIO_CMP_FLT_LOUDNESS_LITE);
+        mpDRCObj->setParameter(BLOUD_PAR_SET_STEREO_TO_MONO_MODE, (void *)mSteroToMono);
+        mpDRCObj->open();
+    }
+}
+
+void AudioMixer::track_t::setDRCHandler(audio_devices_t device, uint32_t sampleRate)
+{
+    DRC_ALOGD("setDRCHandler, mUIDRCEnable %d, mpDRCObj %p, mStreamType %d, device %d, mDRCState %d, mSteroToMono %d, this %p",
+        mUIDRCEnable, mpDRCObj, mStreamType, device, mDRCState, mSteroToMono, this);
+
+    if (!(device&AUDIO_DEVICE_OUT_SPEAKER)) {
+        if (mpDRCObj && mDRCState) {
+            mpDRCObj->close();
+            mDRCState = false;
+            delete mpDRCObj;
+            mpDRCObj = NULL;
+        }
+    }
+
+    if ((true == mUIDRCEnable) && (device & AUDIO_DEVICE_OUT_SPEAKER) &&
+#ifdef MTK_AUDIOMIXER_DRC_VOIP_ONLY
+         (mStreamType == AUDIO_STREAM_VOICE_CALL))
+#else
+         (mStreamType != AUDIO_STREAM_DTMF))
+#endif
+    {
+        if (mpDRCObj == NULL) {
+            //ALOGD("new MtkAudioLoud");
+#if defined(MTK_AUDIO_BLOUD_CUSTOMPARAMETER_V4) || defined(MTK_AUDIO_BLOUD_CUSTOMPARAMETER_V3)
+            mpDRCObj = new MtkAudioLoud(AUDIO_COMP_FLT_AUDIO);
+#else
+            if (mStreamType == AUDIO_STREAM_RING) {
+                mpDRCObj = new MtkAudioLoud(AUDIO_COMP_FLT_DRC_FOR_RINGTONE);
+            } else {
+                mpDRCObj = new MtkAudioLoud(AUDIO_COMP_FLT_DRC_FOR_MUSIC);
+            }
+
+            if (mStreamType == AUDIO_STREAM_VOICE_CALL) {
+                mpDRCObj->setParameter(BLOUD_PAR_SET_NOISE_FILTER, (void *)true);
+            }
+#endif
+
+            mpDRCObj->setParameter(BLOUD_PAR_SET_SAMPLE_RATE, (void *)(uintptr_t)sampleRate);
+
+            if (!doesResample() &&
+                mMixerChannelMask == AUDIO_CHANNEL_OUT_STEREO &&
+                channelMask == AUDIO_CHANNEL_OUT_MONO) {
+                mpDRCObj->setParameter(BLOUD_PAR_SET_CHANNEL_NUMBER, (void *)BLOUD_HD_MONO);
+            } else {
+                mpDRCObj->setParameter(BLOUD_PAR_SET_CHANNEL_NUMBER, (void *)BLOUD_HD_STEREO);
+            }
+
+            if (AUDIO_FORMAT_PCM_16_BIT == mMixerInFormat && !doesResample()) {
+                mpDRCObj->setParameter(BLOUD_PAR_SET_PCM_FORMAT, (void *)BLOUD_IN_Q1P15_OUT_Q1P15);
+            } else {
+                mpDRCObj->setParameter(BLOUD_PAR_SET_PCM_FORMAT, (void *)BLOUD_IN_Q1P31_OUT_Q1P31);
+            }
+
+            //mpDRCObj->setParameter(BLOUD_PAR_SET_FILTER_TYPE, (void *)AUDIO_COMP_FLT_AUDIO);
+            mpDRCObj->setParameter(BLOUD_PAR_SET_USE_DEFAULT_PARAM, (void *)NULL);
+            mpDRCObj->setParameter(BLOUD_PAR_SET_WORK_MODE, (void *)AUDIO_CMP_FLT_LOUDNESS_LITE);
+            mpDRCObj->setParameter(BLOUD_PAR_SET_STEREO_TO_MONO_MODE, (void *)mSteroToMono);
+            mpDRCObj->open();
+            mDRCState = true;
+            mDRCEnable = true;
+            resetDRC();
+        } else {
+            if (false == mDRCEnable) {
+                //ALOGD("Change2Normal, mDRCEnable %d", mDRCEnable);
+                if (ACE_SUCCESS == mpDRCObj->change2Normal()) {
+                    mDRCEnable = true;
+                }
+            }
+        }
+    } else {
+        if ((true == mDRCState) && (mpDRCObj != NULL)) {
+            if (true == mDRCEnable) {
+                //ALOGD("Change2ByPass, mDRCEnable %d", mDRCEnable);
+                if (ACE_SUCCESS == mpDRCObj->change2ByPass()) {
+                    mDRCEnable = false;
+                }
+            }
+        }
+    }
+}
+
+void AudioMixer::track_t::applyDRC(void *ioBuffer, uint32_t SampleSize, int32_t *tempBuffer,
+    audio_format_t process_format, int process_channel)
+{
+    uint32_t inputSampleSize, outputSampleSize;
+
+    if (!checkDRCEnable()) {
+       return;
+    }
+
+    DRC_ALOGD("%s, SampleSize %d", __FUNCTION__, SampleSize);
+
+    inputSampleSize = outputSampleSize = SampleSize;
+
+    //MixerDumpPcm(gaf_mixer_drc_pcm_before, gaf_mixer_drc_propty, gettid(), this, ioBuffer, SampleSize);
+    MixerDumpPcm(gaf_mixer_drc_pcm_before, gaf_mixer_drc_propty, getpid(), gettid(), this, ioBuffer, SampleSize,
+        process_format, mDevSampleRate, process_channel );
+    mpDRCObj->process((void *)ioBuffer, &inputSampleSize, (void *)tempBuffer, &outputSampleSize);
+    //MixerDumpPcm(gaf_mixer_drc_pcm_after,  gaf_mixer_drc_propty, gettid(), this, tempBuffer, SampleSize);
+    MixerDumpPcm(gaf_mixer_drc_pcm_after,  gaf_mixer_drc_propty, getpid(), gettid(), this, tempBuffer, SampleSize,
+        process_format, mDevSampleRate, process_channel );
+
+    memcpy(ioBuffer, tempBuffer, SampleSize);
+}
+
+bool AudioMixer::track_t::checkDRCEnable()
+{
+    if ((mpDRCObj == NULL) || (!mDRCState)) {
+       return false;
+    } else {
+       return true;
+    }
+}
+
+static inline int32_t clamp4_27(int32_t sample)
+{
+    if ((sample >> 27) ^ (sample >> 31)) {
+        sample = 0x7FFFFFF ^ (sample >> 31);
+    }
+    return sample;
+}
+#endif
+// MTK Add end
 } // namespace android

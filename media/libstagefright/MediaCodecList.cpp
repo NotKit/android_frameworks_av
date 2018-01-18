@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -41,6 +46,13 @@
 
 #include <cutils/properties.h>
 #include <expat.h>
+
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <sys/sysconf.h>
+#define MC_LOGI(x, ...) ALOGI("[%s] " x, __FUNCTION__, ##__VA_ARGS__)
+#else
+#define MC_LOGI(x, ...)
+#endif
 
 namespace android {
 
@@ -178,6 +190,9 @@ MediaCodecList::MediaCodecList()
     parseTopLevelXMLFile("/etc/media_codecs.xml");
     parseTopLevelXMLFile("/etc/media_codecs_performance.xml", true/* ignore_errors */);
     parseTopLevelXMLFile(kProfilingResults, true/* ignore_errors */);
+#ifdef MTK_AOSP_ENHANCEMENT
+    parseTopLevelXMLFile("/etc/media_codecs_mediatek_video_svp.xml", true/* ignore_errors */);
+#endif
 }
 
 void MediaCodecList::parseTopLevelXMLFile(const char *codecs_xml, bool ignore_errors) {
@@ -294,6 +309,31 @@ void MediaCodecList::parseTopLevelXMLFile(const char *codecs_xml, bool ignore_er
 #endif
         }
     }
+    // for CTS
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifndef MTK_WMA_PLAYBACK_SUPPORT
+        const char* wma_name = "OMX.MTK.AUDIO.DECODER.WMA";
+        deleteByType(wma_name);
+#endif
+#ifndef MTK_SWIP_WMAPRO
+        const char* wmapro_name = "OMX.MTK.AUDIO.DECODER.WMAPRO";
+        deleteByType(wmapro_name);
+#endif
+#ifndef MTK_AUDIO_RAW_SUPPORT
+        const char* pcm_name = "OMX.MTK.AUDIO.DECODER.RAW";
+        deleteByType(pcm_name);
+#endif
+#ifndef MTK_AUDIO_DDPLUS_SUPPORT
+        const char* DDPLUS_name1 = "OMX.dolby.ac3.decoder";
+        deleteByType(DDPLUS_name1);
+        const char* DDPLUS_name2 = "OMX.dolby.ec3.decoder";
+        deleteByType(DDPLUS_name2);
+#endif
+#ifndef MTK_AUDIO_APE_SUPPORT
+        const char* ape_name = "OMX.MTK.AUDIO.DECODER.APE";
+        deleteByType(ape_name);
+#endif
+#endif
 
 #if 0
     for (size_t i = 0; i < mCodecInfos.size(); ++i) {
@@ -1116,6 +1156,7 @@ size_t MediaCodecList::countCodecs() const {
     return mCodecInfos.size();
 }
 
+
 const sp<AMessage> MediaCodecList::getGlobalSettings() const {
     return mGlobalSettings;
 }
@@ -1200,5 +1241,24 @@ uint32_t MediaCodecList::getQuirksFor(const char *componentName) {
 
     return quirks;
 }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+status_t MediaCodecList::deleteByType(const char *name)
+{
+    ALOGD("deleteByType: name is %s", name);
+    for(;;)
+    {
+        ssize_t index = findCodecByName(name);
+        if(index >= 0)
+        {
+            mCodecInfos.removeAt(index);
+        }
+        else
+            break;
+    }
+
+    return OK;
+}
+#endif
 
 }  // namespace android

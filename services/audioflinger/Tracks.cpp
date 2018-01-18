@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2012, The Android Open Source Project
 **
@@ -35,6 +40,13 @@
 #include <media/nbaio/PipeReader.h>
 #include <audio_utils/minifloat.h>
 
+#ifdef MTK_AUDIO
+#include <inttypes.h>
+#include "AudioUtilmtk.h"
+#endif
+#ifdef DOLBY_UDC
+#include <media/AudioParameter.h>
+#endif // DOLBY_UDC
 // ----------------------------------------------------------------------------
 
 // Note: the following macro is used for extremely verbose logging message.  In
@@ -55,6 +67,17 @@
 #define TIME_TO_NANOS(time) ((uint64_t)time.tv_sec * NANOS_PER_SECOND + time.tv_nsec)
 
 namespace android {
+
+#ifdef MTK_AUDIO
+#define READY_CHECK    20
+
+static   unsigned int mAllTrackCount = 0;
+#ifdef DEBUG_AUDIO_PCM
+//add by weiguo to dump pcm data
+static   const char * gaf_track_pcm = "/sdcard/mtklog/audio_dump/af_track_pcm";
+static   const char * gaf_track_propty = "af.track.pcm";
+#endif
+#endif
 
 // ----------------------------------------------------------------------------
 //      TrackBase
@@ -83,6 +106,10 @@ AudioFlinger::ThreadBase::TrackBase::TrackBase(
         // mBuffer
         mState(IDLE),
         mSampleRate(sampleRate),
+#ifdef MTK_AUDIO
+        mReset(false),
+        mTrackCount(mAllTrackCount++),
+#endif
         mFormat(format),
         mChannelMask(channelMask),
         mChannelCount(isOut ?
@@ -216,6 +243,12 @@ AudioFlinger::ThreadBase::TrackBase::TrackBase(
 #endif
 
     }
+
+#ifdef MTK_AUDIO
+    ALOGD("track(%p): mIsOut %d, mFrameCount %zu, mSampleRate %d, mFormat %d, mChannelCount %d,"
+        " mTrackCount %d, thread %p, sessionId %d",
+        this, mIsOut, mFrameCount, mSampleRate, mFormat, mChannelCount, mTrackCount, thread, sessionId);
+#endif
 }
 
 status_t AudioFlinger::ThreadBase::TrackBase::initCheck() const
@@ -231,6 +264,10 @@ status_t AudioFlinger::ThreadBase::TrackBase::initCheck() const
 
 AudioFlinger::ThreadBase::TrackBase::~TrackBase()
 {
+#ifdef MTK_AUDIO
+    ALOGD("delete track(%p): mTrackCount(%d)",
+        this, mTrackCount);
+#endif
 #ifdef TEE_SINK
     dumpTee(-1, mTeeSource, mId);
 #endif
@@ -264,6 +301,18 @@ void AudioFlinger::ThreadBase::TrackBase::releaseBuffer(AudioBufferProvider::Buf
     if (mTeeSink != 0) {
         (void) mTeeSink->write(buffer->raw, buffer->frameCount);
     }
+#endif
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+    if (!mIsOut) {
+        const int SIZE = 256;
+        char fileName[SIZE];
+        sprintf(fileName, "%s_%d_%p_%p_in.pcm", gaf_track_pcm, mTrackCount, this, mServerProxy);
+        //AudioDump::dump(fileName,buffer->raw,buffer->frameCount*mFrameSize,gaf_track_propty);
+        AudioDump::threadDump(fileName, buffer->raw, buffer->frameCount * mFrameSize, gaf_track_propty,
+                mFormat, mSampleRate, mChannelCount);
+        }
+#endif
 #endif
 
     ServerProxy::Buffer buf;
@@ -366,6 +415,9 @@ AudioFlinger::PlaybackThread::Track::Track(
                   sessionId, uid, true /*isOut*/,
                   (type == TYPE_PATCH) ? ( buffer == NULL ? ALLOC_LOCAL : ALLOC_NONE) : ALLOC_CBLK,
                   type),
+#ifdef MTK_AUDIO
+                  mIsOKonThread(false),
+#endif
     mFillingUpStatus(FS_INVALID),
     // mRetryCount initialized later when needed
     mSharedBuffer(sharedBuffer),
@@ -439,7 +491,16 @@ AudioFlinger::PlaybackThread::Track::Track(
         //       being created.  It would be better to allocate the index dynamically.
         mFastIndex = i;
         thread->mFastTrackAvailMask &= ~(1 << i);
+#ifdef MTK_AUDIO
+        mAudioTrackServerProxy->mIsFast = 1;
+#endif
     }
+#ifdef MTK_AUDIO
+    mReadyCheckCount = 0;
+
+    ALOGD("track(%p): mFastIndex %d, mStreamType %d, mName %d",
+        this, mFastIndex, mStreamType, mName);
+#endif
 }
 
 AudioFlinger::PlaybackThread::Track::~Track()
@@ -486,6 +547,10 @@ void AudioFlinger::PlaybackThread::Track::destroy()
         if (isExternalTrack() && !wasActive) {
             AudioSystem::releaseOutput(mThreadIoHandle, mStreamType, mSessionId);
         }
+#ifdef DOLBY_UDC
+        // Notify effect DAP controller that processed audio is no longer available
+        EffectDapController::instance()->setProcessedAudioState(mId, false);
+#endif // DOLBY_END
     }
 }
 
@@ -600,6 +665,26 @@ status_t AudioFlinger::PlaybackThread::Track::getNextBuffer(
         mAudioTrackServerProxy->tallyUnderrunFrames(0);
     }
 
+#ifdef MTK_AUDIO
+    if (NULL == buffer->raw) {
+        // ALPS02545749, since the buffer is null, do drcReset.
+        mReset = true;
+        ALOGE("%s, track(%p) get null buffer, mState %d, mFillingUpStatus %u",
+            __FUNCTION__, this, mState, mFillingUpStatus);
+    }
+#ifdef DEBUG_AUDIO_PCM
+    else {
+        if (mIsOut) {
+            const int SIZE = 256;
+            char fileName[SIZE];
+            sprintf(fileName, "%s_%d_%p_%p_out.pcm", gaf_track_pcm, mTrackCount, this, mServerProxy);
+            //AudioDump::dump(fileName,buffer->raw,buffer->frameCount*mFrameSize,gaf_track_propty);
+            AudioDump::threadDump(fileName, buffer->raw, buffer->frameCount * mFrameSize, gaf_track_propty,
+                    mFormat, mSampleRate, mChannelCount);
+        }
+    }
+#endif
+#endif
     return status;
 }
 
@@ -635,6 +720,7 @@ void AudioFlinger::PlaybackThread::Track::onTimestamp(const ExtendedTimestamp &t
 }
 
 // Don't call for fast tracks; the framesReady() could result in priority inversion
+#ifndef MTK_AUDIO
 bool AudioFlinger::PlaybackThread::Track::isReady() const {
     if (mFillingUpStatus != FS_FILLING || isStopped() || isPausing()) {
         return true;
@@ -655,10 +741,56 @@ bool AudioFlinger::PlaybackThread::Track::isReady() const {
     }
     return false;
 }
+#else
+bool AudioFlinger::PlaybackThread::Track::isReady() const {
+    static bool isReady = false;
+    if (!mIsPausedToFlush) {
+        if (mFillingUpStatus != FS_FILLING || isStopped() || isPausing()) {
+            ALOGD_IF(!isReady, "%s_1 => true, track(%p): mState %d, mFillingUpStatus %d, mIsPausedToFlush %d",
+                __FUNCTION__, this, mState, mFillingUpStatus, mIsPausedToFlush);
+            isReady = true;
+            return true;
+        }
+    }
+
+    if (isStopping()) {
+        if (framesReady() > 0) {
+            mFillingUpStatus = FS_FILLED;
+        }
+        ALOGD_IF(!isReady, "%s_2 => true, track(%p): mState %d, mFillingUpStatus %d, mIsPausedToFlush %d",
+            __FUNCTION__, this, mState, mFillingUpStatus, mIsPausedToFlush);
+        isReady = true;
+        return true;
+    }
+
+    if (framesReady() >= mServerProxy->getBufferSizeInFrames() || (mReadyCheckCount >= READY_CHECK) ||
+            (mCblk->mFlags & CBLK_FORCEREADY)) {
+        mFillingUpStatus = FS_FILLED;
+        android_atomic_and(~CBLK_FORCEREADY, &mCblk->mFlags);
+        ALOGD_IF(!isReady, "%s_3 => true, track(%p): mState %d, mFillingUpStatus %d, mIsPausedToFlush %d, mReadyCheckCount %d",
+            __FUNCTION__, this, mState, mFillingUpStatus, mIsPausedToFlush, mReadyCheckCount);
+        isReady = true;
+        mReadyCheckCount = 0;
+        return true;
+    }
+    else {
+        mReadyCheckCount++;
+    }
+
+    ALOGD_IF(isReady, "%s_4 => false, track(%p): mState %d, mFillingUpStatus %d, mIsPausedToFlush %d, mReadyCheckCount %d",
+        __FUNCTION__, this, mState, mFillingUpStatus, mIsPausedToFlush, mReadyCheckCount);
+    isReady = false;
+    return false;
+}
+#endif
 
 status_t AudioFlinger::PlaybackThread::Track::start(AudioSystem::sync_event_t event __unused,
                                                     audio_session_t triggerSession __unused)
 {
+#ifdef MTK_AUDIO
+    ALOGD_IF(!isFastTrack(), "%s, track(%p): mState %d, mFillingUpStatus %d",
+        __FUNCTION__, this, mState, mFillingUpStatus);
+#endif
     status_t status = NO_ERROR;
     ALOGV("start(%d), calling pid %d session %d",
             mName, IPCThreadState::self()->getCallingPid(), mSessionId);
@@ -683,6 +815,12 @@ status_t AudioFlinger::PlaybackThread::Track::start(AudioSystem::sync_event_t ev
         // initial state-stopping. next state-pausing.
         // What if resume is called ?
 
+        ALOGV("%s mState %d", __FUNCTION__, mState);
+
+#ifdef MTK_AUDIO
+        mIsPausedToFlush = false;
+#endif
+
         if (state == PAUSED || state == PAUSING) {
             if (mResumeToStopping) {
                 // happened we need to resume to STOPPING_1
@@ -692,6 +830,11 @@ status_t AudioFlinger::PlaybackThread::Track::start(AudioSystem::sync_event_t ev
                 mState = TrackBase::RESUMING;
                 ALOGV("PAUSED => RESUMING (%d) on thread %p", mName, this);
             }
+#ifdef MTK_AUDIO
+        } else if ((state == FLUSHED || state == IDLE) &&
+                    mStreamType == AUDIO_STREAM_MUSIC) {
+            mState = TrackBase::RESUMING;
+#endif
         } else {
             mState = TrackBase::ACTIVE;
             ALOGV("? => ACTIVE (%d) on thread %p", mName, this);
@@ -719,6 +862,14 @@ status_t AudioFlinger::PlaybackThread::Track::start(AudioSystem::sync_event_t ev
         }
         // track was already in the active list, not a problem
         if (status == ALREADY_EXISTS) {
+#ifdef MTK_AUDIO
+            if (mStreamType == AUDIO_STREAM_ENFORCED_AUDIBLE) {
+                ALOGD("enforc flush Shuttle sound ");
+                ServerProxy::Buffer buffer;
+                buffer.mFrameCount = 1;
+                (void)mAudioTrackServerProxy->obtainBuffer(&buffer, true /*ackFlush*/);
+            }
+#endif
             status = NO_ERROR;
         } else {
             // Acknowledge any pending flush(), so that subsequent new data isn't discarded.
@@ -739,6 +890,10 @@ status_t AudioFlinger::PlaybackThread::Track::start(AudioSystem::sync_event_t ev
 
 void AudioFlinger::PlaybackThread::Track::stop()
 {
+#ifdef MTK_AUDIO
+    ALOGD_IF(!isFastTrack(), "%s, track(%p): mState %d, mFillingUpStatus %d",
+        __FUNCTION__, this, mState, mFillingUpStatus);
+#endif
     ALOGV("stop(%d), calling pid %d", mName, IPCThreadState::self()->getCallingPid());
     sp<ThreadBase> thread = mThread.promote();
     if (thread != 0) {
@@ -771,6 +926,10 @@ void AudioFlinger::PlaybackThread::Track::stop()
 
 void AudioFlinger::PlaybackThread::Track::pause()
 {
+#ifdef MTK_AUDIO
+    ALOGD_IF(!isFastTrack(), "%s, track(%p): mState %d, mFillingUpStatus %d",
+        __FUNCTION__, this, mState, mFillingUpStatus);
+#endif
     ALOGV("pause(%d), calling pid %d", mName, IPCThreadState::self()->getCallingPid());
     sp<ThreadBase> thread = mThread.promote();
     if (thread != 0) {
@@ -798,10 +957,28 @@ void AudioFlinger::PlaybackThread::Track::pause()
             break;
         }
     }
+
+#ifdef MTK_AUDIO
+    if (thread != 0) {
+        if (PAUSING == mState) {
+            //ALOGD("pause wait +");
+            Mutex::Autolock _l(mPauseCondLock);
+            mPauseFlag = true;
+            mPauseFlagCanRelease = false;
+            mPauseCond.waitRelative(mPauseCondLock, 100000000LL);   // timeout : 100ms
+            mPauseFlag = false;
+            //ALOGD("pause wait -");
+        }
+    }
+#endif
 }
 
 void AudioFlinger::PlaybackThread::Track::flush()
 {
+#ifdef MTK_AUDIO
+    ALOGD_IF(!isFastTrack(), "%s, track(%p): mState %d, mFillingUpStatus %d",
+        __FUNCTION__, this, mState, mFillingUpStatus);
+#endif
     ALOGV("flush(%d)", mName);
     sp<ThreadBase> thread = mThread.promote();
     if (thread != 0) {
@@ -841,6 +1018,11 @@ void AudioFlinger::PlaybackThread::Track::flush()
             }
             // No point remaining in PAUSED state after a flush => go to
             // FLUSHED state
+#ifdef MTK_AUDIO
+            if (mState == PAUSED) {
+                mIsPausedToFlush = true;
+            }
+#endif
             mState = FLUSHED;
             // do not reset the track if it is still in the process of being stopped or paused.
             // this will be done by prepareTracks_l() when the track is stopped.
@@ -856,6 +1038,12 @@ void AudioFlinger::PlaybackThread::Track::flush()
         // Prevent flush being lost if the track is flushed and then resumed
         // before mixer thread can run. This is important when offloading
         // because the hardware buffer could hold a large amount of audio
+#ifdef MTK_AUDIO
+        if (mStreamType == AUDIO_STREAM_MUSIC) {
+            android_atomic_release_store (true, &thread->mFlushShareBuffer[mName - 4096]);
+            ALOGV("-FlushShareBuffer %d ", thread->mFlushShareBuffer[mName - 4096]);
+        }
+#endif
         playbackThread->broadcast_l();
     }
 }
@@ -878,6 +1066,10 @@ void AudioFlinger::PlaybackThread::Track::reset()
     // Do not reset twice to avoid discarding data written just after a flush and before
     // the audioflinger thread detects the track is stopped.
     if (!mResetDone) {
+#ifdef MTK_AUDIO
+        ALOGD_IF(!isFastTrack(), "%s, track(%p): mState %d, mFillingUpStatus %d",
+            __FUNCTION__, this, mState, mFillingUpStatus);
+#endif
         // Force underrun condition to avoid false underrun callback until first data is
         // written to buffer
         android_atomic_and(~CBLK_FORCEREADY, &mCblk->mFlags);
@@ -898,24 +1090,45 @@ status_t AudioFlinger::PlaybackThread::Track::setParameters(const String8& keyVa
     } else if ((thread->type() == ThreadBase::DIRECT) ||
                     (thread->type() == ThreadBase::OFFLOAD)) {
         return thread->setParameters(keyValuePairs);
+#ifdef TIME_STRETCH_ENABLE
+    } else if (thread->type() == ThreadBase::MIXER) {
+        return   thread->setTimestretch(keyValuePairs,mName);
     } else {
         return PERMISSION_DENIED;
     }
+#else
+    } else {
+        return PERMISSION_DENIED;
+    }
+#endif
 }
 
 status_t AudioFlinger::PlaybackThread::Track::getTimestamp(AudioTimestamp& timestamp)
 {
     if (!isOffloaded() && !isDirect()) {
+        ALOGD("INVALID_OPERATION: !isOffloaded() && !isDirect()");
         return INVALID_OPERATION; // normal tracks handled through SSQ
     }
     sp<ThreadBase> thread = mThread.promote();
     if (thread == 0) {
+        ALOGD("INVALID_OPERATION: thread == 0");
         return INVALID_OPERATION;
     }
 
     Mutex::Autolock _l(thread->mLock);
+#if 0 //def MTK_AUDIO    //ship fix for gettimestamp
+    Mutex::Autolock _l2(thread->mMixLock);
+#endif
     PlaybackThread *playbackThread = (PlaybackThread *)thread.get();
+
+#ifndef MTK_AUDIO
     return playbackThread->getTimestamp_l(timestamp);
+#else
+    status_t result = playbackThread->getTimestamp_l(timestamp);
+    ALOGV("track(%p)::getTimestamp: timestamp: result, mPosition, mTime, %d, %u, %ld.%03d",
+        this, result, timestamp.mPosition, timestamp.mTime.tv_sec, (int) timestamp.mTime.tv_nsec / 1000000);
+    return result;
+#endif
 }
 
 status_t AudioFlinger::PlaybackThread::Track::attachAuxEffect(int EffectId)
@@ -1084,7 +1297,20 @@ void AudioFlinger::PlaybackThread::Track::signalClientFlag(int32_t flag)
 {
     // FIXME should use proxy, and needs work
     audio_track_cblk_t* cblk = mCblk;
+#ifdef MTK_AUDIO_TUNNELING_SUPPORT
+    sp<ThreadBase> thread = mThread.promote();
+    sp<EffectChain> ec = thread->getEffectChain_l(mSessionId);
+    if (thread->mAudioFlinger->isNonOffloadableGlobalEffectEnabled_l() ||
+       (ec != 0 && ec->isNonOffloadableEnabled())) {
+        android_atomic_or(CBLK_INVALID, &cblk->mFlags);
+        android_atomic_or(CBLK_GLOBAL_EFFECT_ENABLED, &cblk->mFlags);
+    }
+    else {
+        android_atomic_or(flag, &cblk->mFlags);
+    }
+#else
     android_atomic_or(flag, &cblk->mFlags);
+#endif
     android_atomic_release_store(0x40000000, &cblk->mFutex);
     // client is not in server, so FUTEX_WAKE is needed instead of FUTEX_WAKE_PRIVATE
     (void) syscall(__NR_futex, &cblk->mFutex, FUTEX_WAKE, INT_MAX);
@@ -1128,11 +1354,30 @@ void AudioFlinger::PlaybackThread::Track::resumeAck() {
     }
 }
 
+void AudioFlinger::PlaybackThread::Track::releaseBuffer(AudioBufferProvider::Buffer* buffer)
+{
+    TrackBase::releaseBuffer(buffer);
+#ifdef MTK_AUDIO
+    {
+        Mutex::Autolock _l(mPauseCondLock);
+        if (mPauseFlag && mPauseFlagCanRelease) {
+            mPauseFlag = false;
+            mPauseFlagCanRelease = false;
+            mPauseCond.signal();
+            ALOGD("track(%p) pause signal - released", this);
+        }
+    }
+#endif
+}
+
 //To be called with thread lock held
 void AudioFlinger::PlaybackThread::Track::updateTrackFrameInfo(
         int64_t trackFramesReleased, int64_t sinkFramesWritten,
         const ExtendedTimestamp &timeStamp) {
     //update frame map
+#ifdef MTK_AUDIO
+    ALOGV("trackFramesReleased %" PRId64", sinkFramesWritten %" PRId64,trackFramesReleased, sinkFramesWritten);
+#endif
     mFrameMap.push(trackFramesReleased, sinkFramesWritten);
 
     // adjust server times and set drained state.
@@ -1145,6 +1390,9 @@ void AudioFlinger::PlaybackThread::Track::updateTrackFrameInfo(
             i >= ExtendedTimestamp::LOCATION_SERVER; --i) {
         // Lookup the track frame corresponding to the sink frame position.
         if (local.mTimeNs[i] > 0) {
+#ifdef MTK_AUDIO
+            ALOGV(" i = %d find x %" PRId64, i,  local.mPosition[i]);
+#endif
             local.mPosition[i] = mFrameMap.findX(local.mPosition[i]);
             // check drain state from the latest stage in the pipeline.
             if (!checked && i <= ExtendedTimestamp::LOCATION_KERNEL) {
@@ -1152,6 +1400,10 @@ void AudioFlinger::PlaybackThread::Track::updateTrackFrameInfo(
                         local.mPosition[i] >= mAudioTrackServerProxy->framesReleased());
                 checked = true;
             }
+#ifdef MTK_AUDIO
+            ALOGV("i =%d ,local.mPosition[i] %" PRId64", local.mTimeNs[i] %" PRId64,
+            i, local.mPosition[i],local.mTimeNs[i]);
+#endif
         }
     }
     if (!checked) { // no server info, assume drained.
@@ -1178,7 +1430,10 @@ AudioFlinger::PlaybackThread::OutputTrack::OutputTrack(
               TYPE_OUTPUT),
     mActive(false), mSourceThread(sourceThread), mClientProxy(NULL)
 {
-
+    mIsCrossMount = 0;
+    mFirstblock = 0;
+    mNewRemoteTrack = 0;
+    mOutDevice = 0;
     if (mCblk != NULL) {
         mOutBuffer.frameCount = 0;
         playbackThread->mTracks.add(this);
@@ -1193,6 +1448,15 @@ AudioFlinger::PlaybackThread::OutputTrack::OutputTrack(
         mClientProxy->setVolumeLR(GAIN_MINIFLOAT_PACKED_UNITY);
         mClientProxy->setSendLevel(0.0);
         mClientProxy->setSampleRate(sampleRate);
+#if defined(MTK_CROSSMOUNT_SUPPORT) && defined(CROSSMOUNT_LATENCY_ENHANCE)
+        mIsCrossMount = 0;
+        mFirstblock = 1;
+        mNewRemoteTrack = 0;
+        mOutDevice = playbackThread->outDevice();
+#endif
+#ifdef MTK_AUDIO
+      ALOGV("playback output device %x, firstblock %d", mOutDevice, mFirstblock);
+#endif
     } else {
         ALOGW("Error creating output track on thread %p", playbackThread);
     }
@@ -1215,6 +1479,12 @@ status_t AudioFlinger::PlaybackThread::OutputTrack::start(AudioSystem::sync_even
 
     mActive = true;
     mRetryCount = 127;
+#ifdef MTK_CROSSMOUNT_SUPPORT
+#ifdef CROSSMOUNT_LATENCY_ENHANCE
+    mFirstblock = 1;
+    ALOGD("OutputTrack::start firstblock %d", mFirstblock);
+#endif
+#endif
     return status;
 }
 
@@ -1224,8 +1494,15 @@ void AudioFlinger::PlaybackThread::OutputTrack::stop()
     clearBufferQueue();
     mOutBuffer.frameCount = 0;
     mActive = false;
+#ifdef MTK_CROSSMOUNT_SUPPORT
+#ifdef CROSSMOUNT_LATENCY_ENHANCE
+    mIsCrossMount = 0;
+#endif
+#endif
+    ALOGD("OutputTrack::stop()");
 }
 
+#ifndef MTK_CROSSMOUNT_SUPPORT
 bool AudioFlinger::PlaybackThread::OutputTrack::write(void* data, uint32_t frames)
 {
     Buffer *pInBuffer;
@@ -1239,6 +1516,18 @@ bool AudioFlinger::PlaybackThread::OutputTrack::write(void* data, uint32_t frame
     if (!mActive && frames != 0) {
         (void) start();
     }
+
+#ifdef MTK_AUDIO
+    bool bReset = false;
+    sp<ThreadBase> thread = mThread.promote();
+    if (thread != 0) {
+        Mutex::Autolock _l(thread->mLock);
+        PlaybackThread *playbackThread = (PlaybackThread *)thread.get();
+        if (playbackThread->isSuspended()) {
+            bReset = true;
+        }
+    }
+#endif
 
     while (waitTimeLeftMs) {
         // First write pending buffers, then new data
@@ -1276,7 +1565,15 @@ bool AudioFlinger::PlaybackThread::OutputTrack::write(void* data, uint32_t frame
 
         uint32_t outFrames = pInBuffer->frameCount > mOutBuffer.frameCount ? mOutBuffer.frameCount :
                 pInBuffer->frameCount;
+#ifdef MTK_AUDIO
+        if (bReset) {
+            memset(mOutBuffer.raw, 0, outFrames * mFrameSize);
+        } else {
+            memcpy(mOutBuffer.raw, pInBuffer->raw, outFrames * mFrameSize);
+        }
+#else
         memcpy(mOutBuffer.raw, pInBuffer->raw, outFrames * mFrameSize);
+#endif
         Proxy::Buffer buf;
         buf.mFrameCount = outFrames;
         buf.mRaw = NULL;
@@ -1328,6 +1625,211 @@ bool AudioFlinger::PlaybackThread::OutputTrack::write(void* data, uint32_t frame
 
     return outputBufferFull;
 }
+#else
+bool AudioFlinger::PlaybackThread::OutputTrack::write(void* data, uint32_t frames)
+{
+    Buffer *pInBuffer;
+    Buffer inBuffer;
+    bool outputBufferFull = false;
+    inBuffer.frameCount = frames;
+    inBuffer.raw = data;
+
+    uint32_t waitTimeLeftMs = mSourceThread->waitTimeMs();
+#ifdef MTK_CROSSMOUNT_SUPPORT
+#ifdef CROSSMOUNT_LATENCY_ENHANCE
+    ALOGV("OutputTrack::write() %p  frames %u", this, frames);
+    if (mNewRemoteTrack == 1 && frames) {
+        mNewRemoteTrack = 0;
+        mFirstblock = 1;
+        ALOGV("OutputTrack::write() %p mFirstblock =1", this);
+    }
+    bool needblock;// = (mOutDevice != AUDIO_DEVICE_OUT_REMOTE_SUBMIX) ? 1:0;
+    bool needqueue = (mBufferQueue.size() < 14) && ((mOutDevice != AUDIO_DEVICE_OUT_REMOTE_SUBMIX) && mIsCrossMount);
+    needblock = (needqueue && mFirstblock);
+    ALOGV("OutputTrack::write() %p , needblock %d, mBufferQueue.size() %zu, mOutDevice 0x%x, mFirstblock %d",
+        this, needblock, mBufferQueue.size(), mOutDevice, mFirstblock);
+#endif
+#endif
+    if (!mActive && frames != 0) {
+        start();
+        sp<ThreadBase> thread = mThread.promote();
+        if (thread != 0) {
+            if (mFrameCount > frames) {
+                if (mBufferQueue.size() < kMaxOverFlowBuffers) {
+                    uint32_t startFrames = (mFrameCount - frames);
+                    pInBuffer = new Buffer;
+                    pInBuffer->mBuffer = malloc(startFrames * mFrameSize);
+                    pInBuffer->frameCount = startFrames;
+                    pInBuffer->raw = pInBuffer->mBuffer;
+                    memset(pInBuffer->raw, 0, startFrames * mFrameSize);
+                    mBufferQueue.add(pInBuffer);
+                    ALOGV("OutputTrack::write() %p  adding overflow buffer mBufferQueue.add, %zu, startFrames %u",
+                        this, mBufferQueue.size(), startFrames);
+                } else {
+                    ALOGW("OutputTrack::write() %p no more buffers in queue", this);
+                }
+            }
+        }
+    }
+
+#ifdef MTK_CROSSMOUNT_SUPPORT
+#ifdef CROSSMOUNT_LATENCY_ENHANCE
+    // always queue buffer first
+    ALOGV("OutputTrack::write() %p need Queue %d",this,needqueue );
+    if ( needqueue) {
+        sp<ThreadBase> thread = mThread.promote();
+        if (thread != 0 && !thread->standby()) {
+            if (mBufferQueue.size() < kMaxOverFlowBuffers) {
+                if (inBuffer.frameCount) {
+                    pInBuffer = new Buffer;
+                    pInBuffer->mBuffer = malloc(inBuffer.frameCount * mFrameSize);
+                    pInBuffer->frameCount = inBuffer.frameCount;
+                    pInBuffer->raw = pInBuffer->mBuffer;
+                    memcpy(pInBuffer->raw, inBuffer.raw, inBuffer.frameCount * mFrameSize);
+                    mBufferQueue.add(pInBuffer);
+                    inBuffer.frameCount = 0;
+                    ALOGV("OutputTrack::write() %p thread %p adding overflow buffer %zu  add frameCount %d", this,
+                        mThread.unsafe_get(), mBufferQueue.size(), pInBuffer->frameCount);
+                } else if (mFirstblock) {
+                    frames = mFrameCount >> 2;
+                    pInBuffer = new Buffer;
+                    pInBuffer->mBuffer = malloc(frames * mFrameSize);
+                    pInBuffer->frameCount = frames;
+                    pInBuffer->raw = pInBuffer->mBuffer;
+                    memset(pInBuffer->raw, 0, frames * mFrameSize);
+                    mBufferQueue.add(pInBuffer);
+                    ALOGV("OutputTrack::write() %p need Queue stuff  %d zero ", this, mFrameCount);
+                }
+            } else {
+                ALOGW("OutputTrack::write() %p thread %p no more overflow buffers",
+                    mThread.unsafe_get(), this);
+            }
+        }
+    }
+    if (!needblock) {
+        mFirstblock = 0;
+        //ALOGD("needblock %d, firstblock %d", needblock, firstblock);
+#endif
+#endif
+        while (waitTimeLeftMs) {
+            ALOGV("OutputTrack::write() %p waitTimeLeftMs %d", this, waitTimeLeftMs);
+            // First write pending buffers, then new data
+            if (mBufferQueue.size()) {
+                pInBuffer = mBufferQueue.itemAt(0);
+                ALOGW("OutputTrack::write() %p get data from queue", this);
+            } else {
+                pInBuffer = &inBuffer;
+                ALOGW("OutputTrack::write() %p get data directly", this);
+            }
+
+            if (pInBuffer->frameCount == 0) {
+                break;
+            }
+
+            if (mOutBuffer.frameCount == 0) {
+                mOutBuffer.frameCount = pInBuffer->frameCount;
+                nsecs_t startTime = systemTime();
+                status_t status = obtainBuffer(&mOutBuffer, waitTimeLeftMs);
+                if (status != NO_ERROR) {
+                    ALOGD("OutputTrack::write() %p thread %p no more output buffers; status %d", this,
+                            mThread.unsafe_get(), status);
+                    outputBufferFull = true;
+                    break;
+                }
+                uint32_t waitTimeMs = (uint32_t)ns2ms(systemTime() - startTime);
+                if (waitTimeLeftMs >= waitTimeMs) {
+                    waitTimeLeftMs -= waitTimeMs;
+                } else {
+                    waitTimeLeftMs = 0;
+                }
+            }
+
+            uint32_t outFrames = pInBuffer->frameCount > mOutBuffer.frameCount ? mOutBuffer.frameCount :
+                    pInBuffer->frameCount;
+
+            memcpy(mOutBuffer.raw, pInBuffer->raw, outFrames * mFrameSize);
+
+            Proxy::Buffer buf;
+            buf.mFrameCount = outFrames;
+            buf.mRaw = NULL;
+            mClientProxy->releaseBuffer(&buf);
+            pInBuffer->frameCount -= outFrames;
+            pInBuffer->i8 += outFrames * mFrameSize;
+            mOutBuffer.frameCount -= outFrames;
+            mOutBuffer.i8 += outFrames * mFrameSize;
+
+            if (pInBuffer->frameCount == 0) {
+                if (mBufferQueue.size()) {
+                    mBufferQueue.removeAt(0);
+                    free(pInBuffer->mBuffer);
+                    delete pInBuffer;
+                    ALOGV("OutputTrack::write() %p thread %p released overflow buffer %zu", this,
+                            mThread.unsafe_get(), mBufferQueue.size());
+
+#ifdef MTK_CROSSMOUNT_SUPPORT
+#ifdef CROSSMOUNT_LATENCY_ENHANCE
+                    // break every loop  when crossMount is on, to avoid write block too long
+                    // do not break when frames ==0, frames =0 meas not active track,
+                    // we need consume data.
+                    if (mIsCrossMount && frames != 0) {
+                        break;
+                    }
+#endif
+#endif
+                } else {
+                    break;
+                }
+            }
+        }
+
+#ifdef MTK_CROSSMOUNT_SUPPORT
+#ifdef CROSSMOUNT_LATENCY_ENHANCE
+    }
+#endif
+#endif
+    // If we could not write all frames, allocate a buffer and queue it for next time.
+    if (inBuffer.frameCount) {
+        sp<ThreadBase> thread = mThread.promote();
+        if (thread != 0 && !thread->standby()) {
+            if (mBufferQueue.size() < kMaxOverFlowBuffers) {
+                pInBuffer = new Buffer;
+                pInBuffer->mBuffer = malloc(inBuffer.frameCount * mFrameSize);
+                pInBuffer->frameCount = inBuffer.frameCount;
+                pInBuffer->raw = pInBuffer->mBuffer;
+                memcpy(pInBuffer->raw, inBuffer.raw, inBuffer.frameCount * mFrameSize);
+                mBufferQueue.add(pInBuffer);
+                ALOGV("OutputTrack::write() %p thread %p adding overflow buffer %zu", this,
+                        mThread.unsafe_get(), mBufferQueue.size());
+            } else {
+                ALOGW("OutputTrack::write() %p thread %p no more overflow buffers",
+                        mThread.unsafe_get(), this);
+            }
+        }
+    }
+
+    // Calling write() with a 0 length buffer, means that no more data will be written:
+    // If no more buffers are pending, fill output track buffer to make sure it is started
+    // by output mixer.
+    if (frames == 0 && mBufferQueue.size() == 0) {
+        // FIXME borken, replace by getting framesReady() from proxy
+        size_t user = 0;    // was mCblk->user
+        if (user < mFrameCount) {
+            frames = mFrameCount - user;
+            pInBuffer = new Buffer;
+            pInBuffer->mBuffer = malloc(frames * mFrameSize);
+            pInBuffer->frameCount = frames;
+            pInBuffer->raw =  pInBuffer->mBuffer;
+            memset(pInBuffer->raw, 0, frames * mFrameSize);
+            mBufferQueue.add(pInBuffer);
+            ALOGV("OutputTrack::write() %p otuput track write 0 to buffer queue, %zu", this, mBufferQueue.size());
+        } else if (mActive) {
+            stop();
+        }
+    }
+
+    return outputBufferFull;
+}
+#endif
 
 status_t AudioFlinger::PlaybackThread::OutputTrack::obtainBuffer(
         AudioBufferProvider::Buffer* buffer, uint32_t waitTimeMs)
@@ -1362,6 +1864,25 @@ void AudioFlinger::PlaybackThread::OutputTrack::restartIfDisabled()
         start();
     }
 }
+
+#ifdef MTK_CROSSMOUNT_SUPPORT
+#ifdef CROSSMOUNT_LATENCY_ENHANCE
+void AudioFlinger::PlaybackThread::OutputTrack::signalNewTrack()
+{
+    ALOGD("signalNewTrack");
+    mNewRemoteTrack = 1;
+    mIsCrossMount = 1;
+    (void)mClientProxy->flush();
+    ALOGD("flush output track buffer");
+    return;
+}
+#endif
+#else
+void AudioFlinger::PlaybackThread::OutputTrack::signalNewTrack()
+{
+    return;
+}
+#endif
 
 AudioFlinger::PlaybackThread::PatchTrack::PatchTrack(PlaybackThread *playbackThread,
                                                      audio_stream_type_t streamType,

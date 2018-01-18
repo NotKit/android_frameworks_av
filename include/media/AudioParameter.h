@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2008-2011 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -48,7 +53,19 @@ public:
     static const char * const keyFrameCount;
     static const char * const keyInputSource;
     static const char * const keyScreenState;
+    static const char * const keyBessurroundOnOff;
+    static const char * const keyBessurroundMode;
+    static const char * const keyTimestretch;
+    static const char * const keyHDMIBitwidth;
+    static const char * const keyHDMIChannel;
+    static const char * const keyHDMIMaxSamplerate;
+    static const char * const keyBesaudenOnOff;
 
+    static const char * const keyRoutingToNone;
+    static const char * const keyFmDirectControl;
+
+    static const char * const keyOffloadAudioDoStandybyWhenMute;
+    static const char * const keyOffloadAudioCheckSupport;
     String8 toString();
 
     status_t add(const String8& key, const String8& value);

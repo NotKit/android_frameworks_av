@@ -531,6 +531,7 @@ status_t SoundTriggerHwService::Module::loadSoundModel(const sp<IMemory>& modelM
                                 sound_model_handle_t *handle)
 {
     ALOGV("loadSoundModel() handle");
+
     if (!captureHotwordAllowed()) {
         return PERMISSION_DENIED;
     }
@@ -652,7 +653,6 @@ status_t SoundTriggerHwService::Module::startRecognition(sound_model_handle_t ha
     if (model->mState == Model::STATE_ACTIVE) {
         return INVALID_OPERATION;
     }
-
 
     //TODO: get capture handle and device from audio policy service
     config->capture_handle = model->mCaptureIOHandle;

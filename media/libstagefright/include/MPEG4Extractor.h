@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,6 +31,10 @@
 #include <utils/List.h>
 #include <utils/Vector.h>
 #include <utils/String8.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <include/SampleTable.h>
+#include <media/stagefright/MetaData.h>
+#endif
 
 namespace android {
 
@@ -80,6 +89,43 @@ private:
         sp<SampleTable> sampleTable;
         bool includes_expensive_metadata;
         bool skipTrack;
+#ifdef MTK_AOSP_ENHANCEMENT
+        uint32_t timescaleFactor; // check timescale too large
+    uint32_t sampleCount;//added by hai.li to check unsupport video
+    int64_t durationUs;
+    bool mIsVideo;
+    bool mIsAudio;
+    bool mIsH263;
+        size_t mMaxSize;
+
+    struct ElstEntry {//added by hai.li to support time offset
+        uint64_t SegDuration;
+        int64_t MediaTime;
+        int16_t MediaRateInt;
+        int16_t MediaRateFrac;
+    };
+    ElstEntry *mElstEntries;
+    uint32_t mElstEntryCount;
+    uint32_t mStartTimeOffset;//in movie time scale
+
+    Track() {
+        mElstEntries = NULL;
+        mElstEntryCount = 0;
+        sampleCount = 0;
+        durationUs = 0;
+        mStartTimeOffset = 0;
+        mIsVideo = false;
+        mIsAudio = false;
+        mIsH263 = false;
+                mMaxSize = 0;
+                timescaleFactor = 0;
+    }
+    //protected:
+    virtual ~Track() {
+        if (mElstEntries && mElstEntryCount)
+        delete mElstEntries;
+    }
+#endif
     };
 
     Vector<SidxEntry> mSidxEntries;
@@ -142,6 +188,13 @@ private:
 
     MPEG4Extractor(const MPEG4Extractor &);
     MPEG4Extractor &operator=(const MPEG4Extractor &);
+#ifdef MTK_AOSP_ENHANCEMENT
+private:
+    bool mHasAudio;
+    status_t setCodecInfoFromFirstFrame(Track *track);
+    status_t setMetaData();
+    bool mLogSwitch; // for log reduction
+#endif
 };
 
 bool SniffMPEG4(

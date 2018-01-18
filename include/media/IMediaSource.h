@@ -64,6 +64,9 @@ public:
             SEEK_NEXT_SYNC,
             SEEK_CLOSEST_SYNC,
             SEEK_CLOSEST,
+#ifdef MTK_AOSP_ENHANCEMENT
+            SEEK_TRY_READ = 100,
+#endif
         };
 
         ReadOptions();

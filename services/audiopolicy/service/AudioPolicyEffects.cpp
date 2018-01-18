@@ -16,6 +16,11 @@
 
 #define LOG_TAG "AudioPolicyEffects"
 //#define LOG_NDEBUG 0
+#ifdef MTK_AUDIO
+#ifdef CONFIG_MT_ENG_BUILD
+#define LOG_NDEBUG 0
+#endif
+#endif
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -23,7 +28,11 @@
 #include <cutils/misc.h>
 #include <media/AudioEffect.h>
 #include <system/audio.h>
+#ifdef MTK_AUDIO
+#include <hardware/audio_effect_mtk.h>
+#else
 #include <hardware/audio_effect.h>
+#endif
 #include <audio_effects/audio_effects_conf.h>
 #include <utils/Vector.h>
 #include <utils/SortedVector.h>

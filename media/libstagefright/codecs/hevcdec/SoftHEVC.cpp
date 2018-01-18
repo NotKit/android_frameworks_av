@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2014 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -574,6 +579,16 @@ void SoftHEVC::onQueueFilled(OMX_U32 portIndex) {
 
             IV_API_CALL_STATUS_T status;
             status = ivdec_api_function(mCodecCtx, (void *)&s_dec_ip, (void *)&s_dec_op);
+
+            /*
+            // FIXME: Compare |status| to IHEVCD_UNSUPPORTED_DIMENSIONS, which is not one of the
+            // IV_API_CALL_STATUS_T, seems be wrong. But this is what the decoder returns right now.
+            // The decoder should be fixed so that |u4_error_code| instead of |status| returns
+            // IHEVCD_UNSUPPORTED_DIMENSIONS.
+            bool unsupportedDimensions =
+                ((IHEVCD_UNSUPPORTED_DIMENSIONS == (IHEVCD_CXA_ERROR_CODES_T)status)
+                    || (IHEVCD_UNSUPPORTED_DIMENSIONS == s_dec_op.u4_error_code));
+            */
 
             bool unsupportedResolution =
                 (IVD_STREAM_WIDTH_HEIGHT_NOT_SUPPORTED == (s_dec_op.u4_error_code & 0xFF));

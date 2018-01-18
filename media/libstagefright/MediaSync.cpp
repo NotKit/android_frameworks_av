@@ -63,7 +63,9 @@ MediaSync::MediaSync()
     // initialize settings
     mPlaybackSettings = AUDIO_PLAYBACK_RATE_DEFAULT;
     mPlaybackSettings.mSpeed = mPlaybackRate;
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    mTimeStampReady = false;
+#endif
     mLooper = new ALooper;
     mLooper->setName("MediaSync");
     mLooper->start(false, false, ANDROID_PRIORITY_AUDIO);
@@ -504,10 +506,28 @@ int64_t MediaSync::getPlayedOutAudioDurationMedia_l(int64_t nowUs) {
         }
         //ALOGD("getTimestamp: OK %d %lld",
         //      numFramesPlayed, (long long)numFramesPlayedAt);
+#ifdef MTK_AOSP_ENHANCEMENT
+//add for MediaSyncTest patch 1/3
+        if(mTimeStampReady != true) {
+            ALOGD("case 1: getTimestamp: OK %d %lld",numFramesPlayed, (long long)numFramesPlayedAt);
+            int64_t durationUsAlready = getDurationIfPlayedAtNativeSampleRate_l(numFramesPlayed)
+                    + nowUs - numFramesPlayedAt;
+
+            ALOGD("case 1: getPlayedOutAudioDurationMedia_l(%lld) nowUs(%lld) frames(%u) "
+                "framesAt(%lld)",
+                (long long)durationUsAlready, (long long)nowUs, numFramesPlayed,
+                (long long)numFramesPlayedAt);
+            mTimeStampReady = true;
+        }
+#endif
     } else if (res == WOULD_BLOCK) {
         // case 2: transitory state on start of a new track
         numFramesPlayed = 0;
         numFramesPlayedAt = nowUs;
+#ifdef MTK_AOSP_ENHANCEMENT
+//add for MediaSyncTest patch 2/3
+        ALOGD("case 2: getTimestamp: WOULD_BLOCK %d %lld", numFramesPlayed, (long long)numFramesPlayedAt);
+#endif
         //ALOGD("getTimestamp: WOULD_BLOCK %d %lld",
         //      numFramesPlayed, (long long)numFramesPlayedAt);
     } else {
@@ -542,6 +562,37 @@ int64_t MediaSync::getPlayedOutAudioDurationMedia_l(int64_t nowUs) {
           "framesAt(%lld)",
           (long long)durationUs, (long long)nowUs, numFramesPlayed,
           (long long)numFramesPlayedAt);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+//s-a support,add for MediaSyncTest patch 3/3
+        static int64_t lastPlayedUs = 0;
+        static int64_t lastNowUs = 0;
+        int64_t nowPlayedUs = 0;
+
+        float mMsecsPerFrame = 1E3f / (mPlaybackSettings.mSpeed * mNativeSampleRateInHz);
+
+        if(mPlaybackRate > 0){
+                nowPlayedUs = (int64_t)(((int64_t)numFramesPlayed)* mPlaybackRate *mMsecsPerFrame*1000ll);
+        }else{
+                nowPlayedUs = (int64_t)(((int64_t)numFramesPlayed)* mMsecsPerFrame*1000ll);
+        }
+
+        ALOGD("audio played time(%lld us), system time(%lld us),[S-A] (%lld ms)",
+                (long long)nowPlayedUs, (long long)nowUs,
+                (long long)((nowUs - lastNowUs) - (nowPlayedUs - lastPlayedUs)) / 1000ll);
+        if (numFramesPlayed > mNumFramesWritten) {
+                numFramesPlayed = mNumFramesWritten;
+                ALOGW("numFramesPlayed(%dus) > mNumFramesWritten(%lld), reset numFramesPlayed",
+                      numFramesPlayed, (long long)mNumFramesWritten);
+        }
+
+        if(lastPlayedUs > 0 && lastNowUs >0){
+             //ATRACE_INT64("System-Audio[ms]",((nowUs-lastNowUs) - (nowPlayedUs-lastPlayedUs))/1000ll);
+        }
+
+        lastPlayedUs= nowPlayedUs;
+        lastNowUs = nowUs;
+#endif
     return durationUs;
 }
 

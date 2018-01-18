@@ -650,6 +650,15 @@ status_t M3UParser::parse(const void *_data, size_t size) {
                 }
             } else if (line.startsWith("#EXT-X-MEDIA")) {
                 err = parseMedia(line);
+            } else if (line.startsWith("#EXT-X-DISCONTINUITY-SEQUENCE")) {
+                if (mIsVariantPlaylist) {
+                    return ERROR_MALFORMED;
+                }
+                size_t seq;
+                err = parseDiscontinuitySequence(line, &seq);
+                if (err == OK) {
+                    mDiscontinuitySeq = seq;
+                }
             }
 
             if (err != OK) {
@@ -666,6 +675,7 @@ status_t M3UParser::parse(const void *_data, size_t size) {
                 }
                 itemMeta->setInt32("discontinuity-sequence",
                         mDiscontinuitySeq + mDiscontinuityCount);
+                ALOGD("dis seq num %zu", mDiscontinuitySeq + mDiscontinuityCount);
             }
 
             mItems.push();

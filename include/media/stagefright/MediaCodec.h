@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -46,12 +51,24 @@ struct Surface;
 struct MediaCodec : public AHandler {
     enum ConfigureFlags {
         CONFIGURE_FLAG_ENCODE   = 1,
+#ifdef MTK_AOSP_ENHANCEMENT
+        CONFIGURE_FLAG_16X_SLOWMOTION = (0x1<<1),
+        CONFIGURE_FLAG_ENABLE_THUMBNAIL_OPTIMIZATION = (0x1<<2),
+#endif
     };
 
     enum BufferFlags {
         BUFFER_FLAG_SYNCFRAME   = 1,
         BUFFER_FLAG_CODECCONFIG = 2,
         BUFFER_FLAG_EOS         = 4,
+#ifdef MTK_AOSP_ENHANCEMENT
+        BUFFER_FLAG_ENDOFFRAME  = 8,
+        BUFFER_FLAG_DUMMY       = 16,
+        BUFFER_FLAG_INTERPOLATE_FRAME  = 32,
+        BUFFER_FLAG_INVALID_PTS = 64,
+        BUFFER_FLAG_PARTAIL_FRAME  = 128,
+        BUFFER_FLAG_MULTISLICE = 256,
+#endif
     };
 
     enum {

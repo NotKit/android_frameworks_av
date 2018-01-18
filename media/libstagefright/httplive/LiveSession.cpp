@@ -432,8 +432,9 @@ status_t LiveSession::dequeueAccessUnit(
             }
 
             strm.mLastDequeuedTimeUs = timeUs;
+#ifndef MTK_AOSP_ENHANCEMENT
             timeUs = calculateMediaTimeUs(firstTimeUs, timeUs, discontinuitySeq);
-
+#endif
             ALOGV("[%s] dequeueAccessUnit: time %lld us, original %lld us",
                     streamStr, (long long)timeUs, (long long)originalTimeUs);
             (*accessUnit)->meta()->setInt64("timeUs",  timeUs);
@@ -887,9 +888,17 @@ void LiveSession::onMessageReceived(const sp<AMessage> &msg) {
                 case PlaylistFetcher::kWhatMetadataDetected:
                 {
                     if (!mHasMetadata) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                        sp<ABuffer> metaBuffer;
+                        ALOGD("kWhatMetadataDetected");
+                        CHECK(msg->findBuffer("buffer", &metaBuffer));
+#endif
                         mHasMetadata = true;
                         sp<AMessage> notify = mNotify->dup();
                         notify->setInt32("what", kWhatMetadataDetected);
+#ifdef MTK_AOSP_ENHANCEMENT
+                        notify->setBuffer("buffer", metaBuffer);
+#endif
                         notify->post();
                     }
                     break;
@@ -1064,6 +1073,7 @@ void LiveSession::onMasterPlaylistFetched(const sp<AMessage> &msg) {
                 itemsWithVideo.push(item);
             }
         }
+#ifndef MTK_AOSP_ENHANCEMENT
         // remove the audio-only variants if we have at least one with video
         if (!itemsWithVideo.empty()
                 && itemsWithVideo.size() < mBandwidthItems.size()) {
@@ -1072,6 +1082,7 @@ void LiveSession::onMasterPlaylistFetched(const sp<AMessage> &msg) {
                 mBandwidthItems.push(itemsWithVideo[i]);
             }
         }
+#endif
 
         CHECK_GT(mBandwidthItems.size(), 0u);
         initialBandwidth = mBandwidthItems[0].mBandwidth;
@@ -1520,8 +1531,13 @@ ssize_t LiveSession::getSelectedTrack(media_track_type type) const {
 
 void LiveSession::changeConfiguration(
         int64_t timeUs, ssize_t bandwidthIndex, bool pickTrack) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("changeConfiguration: timeUs=%lld us, bwIndex=%zd, pickTrack=%d",
+          (long long)timeUs, bandwidthIndex, pickTrack);
+#else
     ALOGV("changeConfiguration: timeUs=%lld us, bwIndex=%zd, pickTrack=%d",
           (long long)timeUs, bandwidthIndex, pickTrack);
+#endif
 
     cancelBandwidthSwitch();
 
@@ -1593,9 +1609,16 @@ void LiveSession::changeConfiguration(
                         mOrigBandwidthIndex, mCurBandwidthIndex);
             }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGD("pausing fetcher-%d, threshold=%.2f",
+                    fetcher->getFetcherID(), threshold);
+            fetcher->pauseAsync(threshold, disconnect);
+#else
             ALOGV("pausing fetcher-%d, threshold=%.2f",
                     fetcher->getFetcherID(), threshold);
             fetcher->pauseAsync(threshold, disconnect);
+#endif
+
         }
     }
 
@@ -1659,6 +1682,9 @@ void LiveSession::onChangeConfiguration2(const sp<AMessage> &msg) {
         for (size_t i = 0; i < mPacketSources.size(); i++) {
             sp<AnotherPacketSource> packetSource = mPacketSources.editValueAt(i);
             sp<MetaData> format = packetSource->getFormat();
+#ifdef MTK_AOSP_ENHANCEMENT
+            status_t bFormatchange = packetSource->CheckFormatChangeBuffer();
+#endif
             packetSource->clear();
             // Set a tentative format here such that HTTPLiveSource will always have
             // a format available when NuPlayer queries. Without an available video
@@ -1667,6 +1693,14 @@ void LiveSession::onChangeConfiguration2(const sp<AMessage> &msg) {
             // authoritative (and possibly same) format once content from the new
             // position is dequeued.
             packetSource->setFormat(format);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+            if(bFormatchange == OK){
+                ALOGD("save formatchange buffer");
+                packetSource->queueDiscontinuity(
+                        ATSParser::DISCONTINUITY_FORMATCHANGE, NULL, true);
+            }
+#endif
         }
 
         for (size_t i = 0; i < kMaxStreams; ++i) {
@@ -1785,10 +1819,18 @@ void LiveSession::onChangeConfiguration3(const sp<AMessage> &msg) {
         mRealTimeBaseUs = ALooper::GetNowUs() - timeUs;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("onChangeConfiguration3: timeUs=%lld, switching=%d, pickTrack=%d, "
+            "mStreamMask=0x%x, mNewStreamMask=0x%x, mSwapMask=0x%x",
+            (long long)timeUs, switching, pickTrack,
+            mStreamMask, mNewStreamMask, mSwapMask);
+#else
     ALOGV("onChangeConfiguration3: timeUs=%lld, switching=%d, pickTrack=%d, "
             "mStreamMask=0x%x, mNewStreamMask=0x%x, mSwapMask=0x%x",
             (long long)timeUs, switching, pickTrack,
             mStreamMask, mNewStreamMask, mSwapMask);
+#endif
+
 
     for (size_t i = 0; i < kMaxStreams; ++i) {
         if (streamMask & indexToType(i)) {
@@ -1803,7 +1845,12 @@ void LiveSession::onChangeConfiguration3(const sp<AMessage> &msg) {
     // Of all existing fetchers:
     // * Resume fetchers that are still needed and assign them original packet sources.
     // * Mark otherwise unneeded fetchers for removal.
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("resuming fetchers for mask 0x%08x", resumeMask);
+#else
     ALOGV("resuming fetchers for mask 0x%08x", resumeMask);
+#endif
+
     for (size_t i = 0; i < mFetcherInfos.size(); ++i) {
         const AString &uri = mFetcherInfos.keyAt(i);
         if (!resumeFetcher(uri, resumeMask, timeUs)) {
@@ -1877,8 +1924,12 @@ void LiveSession::onChangeConfiguration3(const sp<AMessage> &msg) {
                         if (j == kSubtitleIndex) {
                             break;
                         }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+                        ALOGD("stream[%zu]: queue format change", j);
+#else
                         ALOGV("stream[%zu]: queue format change", j);
+#endif
+
                         sources[j]->queueDiscontinuity(
                                 ATSParser::DISCONTINUITY_FORMAT_ONLY, NULL, true);
                     } else {
@@ -1898,6 +1949,15 @@ void LiveSession::onChangeConfiguration3(const sp<AMessage> &msg) {
                 streamMask &= ~indexToType(j);
             }
         }
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("[fetcher-%d] startAsync: startTimeUs %lld mLastSeekTimeUs %lld "
+                "segmentStartTimeUs %lld seekMode %d",
+                fetcher->getFetcherID(),
+                (long long)startTime.mTimeUs,
+                (long long)mLastSeekTimeUs,
+                (long long)startTime.getSegmentTimeUs(),
+                seekMode);
+#else
 
         ALOGV("[fetcher-%d] startAsync: startTimeUs %lld mLastSeekTimeUs %lld "
                 "segmentStartTimeUs %lld seekMode %d",
@@ -1906,6 +1966,7 @@ void LiveSession::onChangeConfiguration3(const sp<AMessage> &msg) {
                 (long long)mLastSeekTimeUs,
                 (long long)startTime.getSegmentTimeUs(),
                 seekMode);
+#endif
 
         // Set the target segment start time to the middle point of the
         // segment where the last sample was.
@@ -1939,8 +2000,13 @@ void LiveSession::onChangeConfiguration3(const sp<AMessage> &msg) {
         }
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("onChangeConfiguration3: mSwitchInProgress %d, mStreamMask 0x%x",
+            mSwitchInProgress, mStreamMask);
+#else
     ALOGV("onChangeConfiguration3: mSwitchInProgress %d, mStreamMask 0x%x",
             mSwitchInProgress, mStreamMask);
+#endif
 
     if (mDisconnectReplyID != NULL) {
         finishDisconnect();
@@ -1948,7 +2014,11 @@ void LiveSession::onChangeConfiguration3(const sp<AMessage> &msg) {
 }
 
 void LiveSession::swapPacketSource(StreamType stream) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("[%s] swapPacketSource", getNameForStream(stream));
+#else
     ALOGV("[%s] swapPacketSource", getNameForStream(stream));
+#endif
 
     // transfer packets from source2 to source
     sp<AnotherPacketSource> &aps = mPacketSources.editValueFor(stream);
@@ -2056,10 +2126,17 @@ void LiveSession::restartPollBuffering() {
 }
 
 void LiveSession::onPollBuffering() {
+#ifdef MTK_AOSP_ENHANCEMENT
+    ALOGD("onPollBuffering: mSwitchInProgress %d, mReconfigurationInProgress %d, "
+            "mInPreparationPhase %d, mCurBandwidthIndex %zd, mStreamMask 0x%x",
+        mSwitchInProgress, mReconfigurationInProgress,
+        mInPreparationPhase, mCurBandwidthIndex, mStreamMask);
+#else
     ALOGV("onPollBuffering: mSwitchInProgress %d, mReconfigurationInProgress %d, "
             "mInPreparationPhase %d, mCurBandwidthIndex %zd, mStreamMask 0x%x",
         mSwitchInProgress, mReconfigurationInProgress,
         mInPreparationPhase, mCurBandwidthIndex, mStreamMask);
+#endif
 
     bool underflow, ready, down, up;
     if (checkBuffering(underflow, ready, down, up)) {
@@ -2168,9 +2245,15 @@ bool LiveSession::checkBuffering(
         status_t finalResult;
         int64_t bufferedDurationUs =
                 mPacketSources[i]->getBufferedDurationUs(&finalResult);
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("[%s] buffered %lld us",
+                getNameForStream(mPacketSources.keyAt(i)),
+                (long long)bufferedDurationUs);
+#else
         ALOGV("[%s] buffered %lld us",
                 getNameForStream(mPacketSources.keyAt(i)),
                 (long long)bufferedDurationUs);
+#endif
         if (durationUs >= 0) {
             int32_t percent;
             if (mPacketSources[i]->isFinished(0 /* duration */)) {
@@ -2306,13 +2389,25 @@ bool LiveSession::switchBandwidthIfNeeded(bool bufferHigh, bool bufferLow) {
     bool isStable;
     if (mBandwidthEstimator->estimateBandwidth(
             &bandwidthBps, &isStable, &shortTermBps)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("bandwidth estimated at %.2f kbps, "
+                "stable %d, shortTermBps %.2f kbps, buffer Hihg %d, low %d",
+                bandwidthBps / 1024.0f, isStable, shortTermBps / 1024.0f, bufferHigh, bufferLow);
+        mLastBandwidthBps = bandwidthBps;
+        mLastBandwidthStable = isStable;
+#else
         ALOGV("bandwidth estimated at %.2f kbps, "
                 "stable %d, shortTermBps %.2f kbps",
                 bandwidthBps / 1024.0f, isStable, shortTermBps / 1024.0f);
+#endif
         mLastBandwidthBps = bandwidthBps;
         mLastBandwidthStable = isStable;
     } else {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGD("no bandwidth estimate.");
+#else
         ALOGV("no bandwidth estimate.");
+#endif
         return false;
     }
 
@@ -2320,8 +2415,14 @@ bool LiveSession::switchBandwidthIfNeeded(bool bufferHigh, bool bufferLow) {
     // canSwithDown and canSwitchUp can't both be true.
     // we only want to switch up when measured bw is 120% higher than current variant,
     // and we only want to switch down when measured bw is below current variant.
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t downloadBps = bandwidthBps * 9 / 10;
     bool canSwitchDown = bufferLow
-            && (bandwidthBps < (int32_t)curBandwidth);
+            && (downloadBps < (int32_t)curBandwidth);
+#else
+    bool canSwitchDown = bufferLow
+        && (bandwidthBps < (int32_t)curBandwidth);
+#endif
     bool canSwitchUp = bufferHigh
             && (bandwidthBps > (int32_t)curBandwidth * 12 / 10);
 

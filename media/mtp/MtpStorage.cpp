@@ -29,6 +29,13 @@
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
+#include <inttypes.h>
+
+// switch log level for user build
+#ifdef MTK_USER_BUILD
+#undef ALOGD
+#define ALOGD ALOGV
+#endif
 
 namespace android {
 
@@ -43,7 +50,7 @@ MtpStorage::MtpStorage(MtpStorageID id, const char* filePath,
         mReserveSpace(reserveSpace),
         mRemovable(removable)
 {
-    ALOGV("MtpStorage id: %d path: %s\n", id, filePath);
+    ALOGD("MtpStorage id: %d path: %s\n", id, filePath);
 }
 
 MtpStorage::~MtpStorage() {
@@ -68,6 +75,8 @@ uint64_t MtpStorage::getMaxCapacity() {
             return -1;
         mMaxCapacity = (uint64_t)stat.f_blocks * (uint64_t)stat.f_bsize;
     }
+
+    ALOGD("MtpStorage mMaxCapacity = %" PRIu64 "\n", mMaxCapacity);
     return mMaxCapacity;
 }
 
@@ -76,11 +85,21 @@ uint64_t MtpStorage::getFreeSpace() {
     if (statfs(getPath(), &stat))
         return -1;
     uint64_t freeSpace = (uint64_t)stat.f_bavail * (uint64_t)stat.f_bsize;
+
+    ALOGD("MtpStorage freeSpace = %" PRIu64 ", mReserveSpace = %" PRIu64 "\n", freeSpace, mReserveSpace);
     return (freeSpace > mReserveSpace ? freeSpace - mReserveSpace : 0);
 }
 
 const char* MtpStorage::getDescription() const {
     return (const char *)mDescription;
+}
+
+bool MtpStorage::setDescription(const char* description) {
+    ALOGV("MtpStorage description = %s \n", description);
+
+    mDescription.clear();
+    mDescription.setTo(description);
+    return true;
 }
 
 }  // namespace android

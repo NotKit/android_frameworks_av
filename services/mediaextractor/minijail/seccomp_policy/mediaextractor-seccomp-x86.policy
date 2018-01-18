@@ -43,3 +43,6 @@ tgkill: 1
 rt_sigprocmask: 1
 fcntl64: 1
 rt_tgsigqueueinfo: 1
+
+# for audio TableOfContent thread setpriority
+ioprio_set: 1

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
 **
 ** Copyright 2008, The Android Open Source Project
 **
@@ -29,9 +34,21 @@
 
 #define WAIT_PERIOD_MS          10
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <cutils/log.h>
+#include <utils/KeyedVector.h>
+
+// BASIC don't have the patch
+#include <audio_utils/pulse.h>
+#endif
+
 namespace android {
 // ---------------------------------------------------------------------------
-
+#ifdef MTK_AOSP_ENHANCEMENT
+    static KeyedVector<int, AudioEffect*> mvpAEC;
+    static KeyedVector<int, AudioEffect*> mvpAGC;
+    static KeyedVector<int, AudioEffect*> mvpNS;
+#endif
 // static
 status_t AudioRecord::getMinFrameCount(
         size_t* frameCount,
@@ -59,7 +76,7 @@ status_t AudioRecord::getMinFrameCount(
             sampleRate, format, channelMask);
         return BAD_VALUE;
     }
-
+    ALOGD("%s %zu", __FUNCTION__ , * frameCount);
     return NO_ERROR;
 }
 
@@ -102,6 +119,130 @@ AudioRecord::AudioRecord(
             uid, pid, pAttributes);
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+AudioRecord::AudioRecord(
+        audio_source_t inputSource,
+        String8 Params,
+        uint32_t sampleRate,
+        audio_format_t format,
+        audio_channel_mask_t channelMask,
+        const String16& opPackageName,
+        int frameCount,
+        callback_t cbf,
+        void* user,
+        int notificationFrames,
+        audio_session_t sessionId,
+        transfer_type transferType,
+        audio_input_flags_t flags,
+        int uid,
+        pid_t pid,
+        const audio_attributes_t* pAttributes)
+    : mActive(false),
+      mStatus(NO_INIT),
+      mOpPackageName(opPackageName),
+      mSessionId(AUDIO_SESSION_ALLOCATE),
+      mPreviousPriority(ANDROID_PRIORITY_NORMAL),
+      mPreviousSchedulingGroup(SP_DEFAULT),
+      mProxy(NULL),
+      mSelectedDeviceId(AUDIO_PORT_HANDLE_NONE)
+{
+
+    if (Params.find("HDREC_SET_VOICE_MODE") > -1 || Params.find("HDREC_SET_VIDEO_MODE") > -1
+        || Params.find("LRChannelSwitch") > -1) {
+        const sp<IAudioFlinger>& audioFlinger = AudioSystem::get_audio_flinger();
+
+        ALOGD("audioFlinger->setParameters,%s+",Params.string());
+        status_t sResult = audioFlinger->setParameters(0, Params);
+        ALOGD("audioFlinger->setParameters:%s-,result=%d",Params.string(),sResult);
+    }
+
+    mStatus = set(inputSource, sampleRate, format, channelMask, frameCount, cbf, user,
+            notificationFrames, false /*threadCanCallJava*/, sessionId, transferType, flags,
+            uid, pid, pAttributes);
+
+
+    ssize_t effectpos = Params.find("PREPROCESS_EFFECT") ;
+    if (effectpos > -1) {
+        const char *cparams = Params.string();
+        const char *key_start = cparams + effectpos;
+        const char *equal_pos = strchr(key_start, '=');
+        if (equal_pos == NULL) {
+            ALOGE("Preprocess effect miss a value");
+        } else {
+            const char *value_start = equal_pos + 1;
+            const char *semicolon_pos = strchr(value_start, ';');
+            String8 value = String8("0");
+            value.setTo(value_start, semicolon_pos - value_start);
+            int ieffect = atoi(value.string());
+            char pUUID[37] = "";
+            // ref: Record.java: initAndStartMediaRecorder
+            int iAEC=1, iNS = iAEC << 1, iAGC = iAEC << 2;
+            // AudioEffect.java: AEC/NS/AGC
+            if ((ieffect & iAEC) > 0) {
+                strcpy(pUUID, "7b491460-8d4d-11e0-bd61-0002a5d5c51b");
+                ALOGD("create AEC effect");
+                AudioEffect *pAEC = new AudioEffect(pUUID, opPackageName, NULL, 0, NULL, NULL, mSessionId, 0);
+                if (pAEC != NULL) {
+                    mvpAEC.add(mSessionId, pAEC);
+                    ALOGD("AEC effect:%p setEnable", pAEC);
+                    pAEC->setEnabled(true);
+                } else {
+                    ALOGD("can't create effect:AEC");
+                }
+            }
+            if ((ieffect & iNS) > 0) {
+                strcpy(pUUID, "58b4b260-8e06-11e0-aa8e-0002a5d5c51b");
+                ALOGD("create NS effect");
+                AudioEffect *pNS = new AudioEffect(pUUID, opPackageName, NULL, 0, NULL, NULL, mSessionId, 0);
+                if (pNS != NULL) {
+                    mvpNS.add(mSessionId, pNS);
+                    ALOGD("NS effect:%p setEnable", pNS);
+                    pNS->setEnabled(true);
+                } else {
+                    ALOGD("can't create effect:NS");
+                }
+            }
+            if ((ieffect & iAGC) > 0) {
+                strcpy(pUUID, "0a8abfe0-654c-11e0-ba26-0002a5d5c51b");
+                ALOGD("create AGC effect");
+                AudioEffect *pAGC = new AudioEffect(pUUID, opPackageName, NULL, 0, NULL, NULL, mSessionId, 0);
+                if (pAGC != NULL) {
+                    mvpAGC.add(mSessionId, pAGC);
+                    ALOGD("AGC effect:%p setEnable", pAGC);
+                    pAGC->setEnabled(true);
+                } else {
+                    ALOGD("can't create effect AGC");
+                }
+            }
+        }
+    }
+}
+
+//void AudioRecord::fn_ReleaseEffect(AudioEffect *&pEffect)
+void AudioRecord::fn_ReleaseEffect()
+{
+
+    int iagc = mvpAGC.indexOfKey(mSessionId);
+    if (iagc >= 0) {
+        AudioEffect *pAGC=mvpAGC.valueFor(mSessionId);
+        ALOGD("delete AGC:%p",pAGC);
+        mvpAGC.removeItem(mSessionId);
+    }
+    int iaec = mvpAEC.indexOfKey(mSessionId);
+    if (iaec >= 0) {
+        AudioEffect *pAEC=mvpAEC.valueFor(mSessionId);
+        ALOGD("delete AEC:%p",pAEC);
+        mvpAEC.removeItem(mSessionId);
+    }
+    int ins = mvpNS.indexOfKey(mSessionId);
+    if (ins >= 0) {
+        AudioEffect *pNS=mvpNS.valueFor(mSessionId);
+        ALOGD("delete NS:%p",pNS);
+        mvpNS.removeItem(mSessionId);
+    }
+}
+#endif
+
 AudioRecord::~AudioRecord()
 {
     if (mStatus == NO_ERROR) {
@@ -126,6 +267,9 @@ AudioRecord::~AudioRecord()
         IPCThreadState::self()->flushCommands();
         ALOGV("~AudioRecord, releasing session id %d",
                 mSessionId);
+#ifdef MTK_AOSP_ENHANCEMENT
+        fn_ReleaseEffect();
+#endif
         AudioSystem::releaseAudioSessionId(mSessionId, -1 /*pid*/);
     }
 }
@@ -147,10 +291,10 @@ status_t AudioRecord::set(
         pid_t pid,
         const audio_attributes_t* pAttributes)
 {
-    ALOGV("set(): inputSource %d, sampleRate %u, format %#x, channelMask %#x, frameCount %zu, "
+    ALOGD("set(): %p, inputSource %d, sampleRate %u, format %#x, channelMask %#x, frameCount %zu, "
           "notificationFrames %u, sessionId %d, transferType %d, flags %#x, opPackageName %s "
           "uid %d, pid %d",
-          inputSource, sampleRate, format, channelMask, frameCount, notificationFrames,
+          this, inputSource, sampleRate, format, channelMask, frameCount, notificationFrames,
           sessionId, transferType, flags, String8(mOpPackageName).string(), uid, pid);
 
     switch (transferType) {
@@ -211,6 +355,7 @@ status_t AudioRecord::set(
         ALOGE("Invalid channel mask %#x", channelMask);
         return BAD_VALUE;
     }
+
     mChannelMask = channelMask;
     uint32_t channelCount = audio_channel_count_from_in_mask(channelMask);
     mChannelCount = channelCount;
@@ -251,6 +396,7 @@ status_t AudioRecord::set(
     mCbf = cbf;
 
     if (cbf != NULL) {
+        ALOGD("set: Create AudioRecordThread");
         mAudioRecordThread = new AudioRecordThread(*this, threadCanCallJava);
         mAudioRecordThread->run("AudioRecord", ANDROID_PRIORITY_AUDIO);
         // thread begins in paused state, and will not reference us until start()
@@ -290,7 +436,7 @@ status_t AudioRecord::set(
 
 status_t AudioRecord::start(AudioSystem::sync_event_t event, audio_session_t triggerSession)
 {
-    ALOGV("start, sync event %d trigger session %d", event, triggerSession);
+    ALOGD("start: %p, sync event %d trigger session %d", this, event, triggerSession);
 
     AutoMutex lock(mLock);
     if (mActive) {
@@ -342,12 +488,13 @@ status_t AudioRecord::start(AudioSystem::sync_event_t event, audio_session_t tri
             androidSetThreadPriority(0, ANDROID_PRIORITY_AUDIO);
         }
     }
-
+    ALOGD("return status %d", status);
     return status;
 }
 
 void AudioRecord::stop()
 {
+    ALOGD("%s: %p", __FUNCTION__, this);
     AutoMutex lock(mLock);
     if (!mActive) {
         return;
@@ -367,11 +514,15 @@ void AudioRecord::stop()
         setpriority(PRIO_PROCESS, 0, mPreviousPriority);
         set_sched_policy(0, mPreviousSchedulingGroup);
     }
+
+    ALOGD("-%s", __FUNCTION__);
 }
 
 bool AudioRecord::stopped() const
 {
+    ALOGD("%s", __FUNCTION__);
     AutoMutex lock(mLock);
+    ALOGD("-%s", __FUNCTION__);
     return !mActive;
 }
 
@@ -469,6 +620,8 @@ status_t AudioRecord::getTimestamp(ExtendedTimestamp *timestamp)
             if (timestamp->mTimeNs[i] >= 0) {
                 timestamp->mPosition[i] += mFramesReadServerOffset;
             }
+            ALOGD("%s, %d time %" PRId64" position %" PRId64, __FUNCTION__, i, timestamp->mTimeNs[i],
+                  timestamp->mPosition[i]);
         }
     }
     return status;
@@ -507,6 +660,7 @@ audio_port_handle_t AudioRecord::getRoutedDeviceId() {
 // must be called with mLock held
 status_t AudioRecord::openRecord_l(const Modulo<uint32_t> &epoch, const String16& opPackageName)
 {
+    ALOGD("%s", __FUNCTION__);
     const sp<IAudioFlinger>& audioFlinger = AudioSystem::get_audio_flinger();
     if (audioFlinger == 0) {
         ALOGE("Could not get audioflinger");
@@ -685,6 +839,7 @@ status_t AudioRecord::openRecord_l(const Modulo<uint32_t> &epoch, const String16
     IPCThreadState::self()->flushCommands();
 
     mCblk = cblk;
+    ALOGD("openRecord_l: %p, mCblk = %p", this, mCblk);
     // note that temp is the (possibly revised) value of frameCount
     if (temp < frameCount || (frameCount == 0 && temp == 0)) {
         ALOGW("Requested frameCount %zu but received frameCount %zu", frameCount, temp);
@@ -851,6 +1006,10 @@ void AudioRecord::releaseBuffer(const Buffer* audioBuffer)
     buffer.mFrameCount = stepCount;
     buffer.mRaw = audioBuffer->raw;
 
+#ifdef MTK_LATENCY_DETECT_PULSE
+    detectPulse(TAG_AUDIO_RECORD, 800, 0, (void *)buffer.mRaw, buffer.mFrameCount, mFormat, mChannelCount, mSampleRate);
+#endif
+
     AutoMutex lock(mLock);
     mInOverrun = false;
     mProxy->releaseBuffer(&buffer);
@@ -967,7 +1126,12 @@ nsecs_t AudioRecord::processAudioBuffer()
     bool markerReached = false;
     Modulo<uint32_t> markerPosition(mMarkerPosition);
     // FIXME fails for wraparound, need 64 bits
-    if (!mMarkerReached && markerPosition.value() > 0 && position >= markerPosition) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (!mMarkerReached && ( markerPosition.value() > 0) && (position >= markerPosition) && mActive)
+#else
+    if (!mMarkerReached && markerPosition.value() > 0 && position >= markerPosition)
+#endif
+   {
         mMarkerReached = markerReached = true;
     }
 
@@ -976,6 +1140,8 @@ nsecs_t AudioRecord::processAudioBuffer()
     Modulo<uint32_t> newPosition(mNewPosition);
     uint32_t updatePeriod = mUpdatePeriod;
     // FIXME fails for wraparound, need 64 bits
+    ALOGV("updatePeriod %d, position %u >= newPosition %u",
+            updatePeriod, position.value(), newPosition.value());
     if (updatePeriod > 0 && position >= newPosition) {
         newPosCount = ((position - newPosition).value() / updatePeriod) + 1;
         mNewPosition += updatePeriod * newPosCount;
@@ -1004,7 +1170,8 @@ nsecs_t AudioRecord::processAudioBuffer()
         mCbf(EVENT_MARKER, mUserData, &markerPosition);
     }
     while (newPosCount > 0) {
-        size_t temp = newPosition.value(); // FIXME size_t != uint32_t
+        size_t temp = newPosition.value();
+        ALOGV("EVENT_NEW_POS");
         mCbf(EVENT_NEW_POS, mUserData, &temp);
         newPosition += updatePeriod;
         newPosCount--;
@@ -1042,7 +1209,24 @@ nsecs_t AudioRecord::processAudioBuffer()
     if (minFrames != (uint32_t) ~0) {
         // This "fudge factor" avoids soaking CPU, and compensates for late progress by server
         static const nsecs_t kFudgeNs = 10000000LL; // 10 ms
+#ifdef MTK_AOSP_ENHANCEMENT
+        // remove kFudgeNs for (mTransfer != TRANSFER_CALLBACK)
+        // to let position update in time for CTS test
+        if(mTransfer != TRANSFER_CALLBACK)
+        {
+             ns = ((minFrames * 1000000000LL) / mSampleRate) ;
+             if(ns <= kFudgeNs)
+             {
+                 ns += kFudgeNs;
+             }
+        }
+        else
+        {
+             ns = ((minFrames * 1000000000LL) / mSampleRate) + kFudgeNs;
+        }
+#else
         ns = ((minFrames * 1000000000LL) / mSampleRate) + kFudgeNs;
+#endif
     }
 
     // If not supplying data by EVENT_MORE_DATA, then we're done
@@ -1093,7 +1277,9 @@ nsecs_t AudioRecord::processAudioBuffer()
         }
 
         size_t reqSize = audioBuffer.size;
+        ALOGV("+Callback EVENT_MORE_DATA");
         mCbf(EVENT_MORE_DATA, mUserData, &audioBuffer);
+        ALOGV("-Callback EVENT_MORE_DATA, audioBuffer.size = %zu", audioBuffer.size);
         size_t readSize = audioBuffer.size;
 
         // Sanity check on returned size

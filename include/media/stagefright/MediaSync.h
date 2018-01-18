@@ -228,6 +228,10 @@ private:
 
     sp<MediaClock> mMediaClock;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    bool mTimeStampReady;
+#endif
+
     MediaSync();
 
     // Must be accessed through RefBase

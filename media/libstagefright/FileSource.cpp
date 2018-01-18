@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,7 +32,15 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+#ifdef MTK_AOSP_ENHANCEMENT
+#include "FileSourceProxy.h"
+#endif
 namespace android {
+
+#ifdef MTK_AOSP_ENHANCEMENT
+FileSourceProxy gFileSourceProxy;
+static ssize_t readAtProxy(int fd, off64_t offset, void *data, size_t size);
+#endif
 
 FileSource::FileSource(const char *filename)
     : mFd(-1),
@@ -51,6 +64,10 @@ FileSource::FileSource(const char *filename)
     } else {
         ALOGE("Failed to open file '%s'. (%s)", filename, strerror(errno));
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    gFileSourceProxy.registerFd(mFd, mOffset, mLength);
+#endif
 }
 
 FileSource::FileSource(int fd, int64_t offset, int64_t length)
@@ -66,6 +83,9 @@ FileSource::FileSource(int fd, int64_t offset, int64_t length)
     ALOGV("fd=%d (%s), offset=%lld, length=%lld",
             fd, nameForFd(fd).c_str(), (long long) offset, (long long) length);
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    gFileSourceProxy.registerFd(mFd, mOffset, mLength);
+#endif
     if (mOffset < 0) {
         mOffset = 0;
     }
@@ -101,6 +121,9 @@ FileSource::FileSource(int fd, int64_t offset, int64_t length)
 
 FileSource::~FileSource() {
     if (mFd >= 0) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        gFileSourceProxy.unregisterFd(mFd);
+#endif
         ::close(mFd);
         mFd = -1;
     }
@@ -148,13 +171,16 @@ ssize_t FileSource::readAt(off64_t offset, void *data, size_t size) {
             == mDecryptHandle->decryptApiType) {
         return readAtDRM(offset, data, size);
    } else {
+#ifdef MTK_AOSP_ENHANCEMENT
+       return readAtProxy(mFd, offset + mOffset, data, size);
+#else
         off64_t result = lseek64(mFd, offset + mOffset, SEEK_SET);
         if (result == -1) {
             ALOGE("seek to %lld failed", (long long)(offset + mOffset));
             return UNKNOWN_ERROR;
         }
-
         return ::read(mFd, data, size);
+#endif
     }
 }
 
@@ -227,4 +253,19 @@ ssize_t FileSource::readAtDRM(off64_t offset, void *data, size_t size) {
         return mDrmManagerClient->pread(mDecryptHandle, data, size, offset + mOffset);
     }
 }
+#ifdef MTK_AOSP_ENHANCEMENT
+static ssize_t readAtProxy(int fd, off64_t offset, void *data, size_t size) {
+    ssize_t sz = gFileSourceProxy.read(fd, offset, data, size);
+    if (sz >= 0) {
+        return sz;
+    } else {
+        off64_t result = lseek64(fd, offset, SEEK_SET);
+        if (result == -1) {
+            ALOGE("seek to %lld failed", (long long)offset);
+            return UNKNOWN_ERROR;
+        }
+        return ::read(fd, data, size);
+    }
+}
+#endif
 }  // namespace android

@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -127,6 +132,18 @@ private:
     void notifyListener_l(int msg, int ext1 = 0, int ext2 = 0, const Parcel *in = NULL);
 
     DISALLOW_EVIL_CONSTRUCTORS(NuPlayerDriver);
+#ifdef MTK_AOSP_ENHANCEMENT
+
+public:
+    void notifyUpdateDuration(int64_t durationUs);
+
+private:
+    int64_t mSeekTimeUs;
+    status_t setMetadata(media::Metadata &meta);
+    void reviseNotifyErrorCode(status_t err, int* ext1);
+    status_t setsmspeed(int32_t smspeed);
+    status_t setslowmotionsection(int64_t slowmotion_start, int64_t slowmotion_end);
+#endif
 };
 
 }  // namespace android

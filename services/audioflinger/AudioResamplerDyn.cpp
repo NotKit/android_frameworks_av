@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2013 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -35,7 +40,15 @@
 #include "AudioResamplerFirGen.h" // requires math.h
 #include "AudioResamplerDyn.h"
 
-//#define DEBUG_RESAMPLER
+#define DEBUG_AUDIO_PCM
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+#include "AudioUtilmtk.h"
+static   const char * gaf_resampler_in_pcm = "/sdcard/mtklog/audio_dump/af_mixer_resampler_in.pcm";
+static   const char * gaf_resampler_out_pcm = "/sdcard/mtklog/audio_dump/af_mixer_resampler_out.pcm";
+static   const char * gaf_resampler_propty = "af.resampler.pcm";
+#endif
+#endif
 
 namespace android {
 
@@ -148,6 +161,18 @@ void AudioResamplerDyn<TC, TI, TO>::InBuffer::readAdvance(TI*& impulse, const in
     readAgain<CHANNELS>(impulse, halfNumCoefs, in, inputIndex);
 }
 
+//<MTK_ADDED
+template<typename TC, typename TI, typename TO>
+void AudioResamplerDyn<TC, TI, TO>::InBuffer::reset(){
+#ifdef MTK_AUDIO
+    if (mState) {
+        memset(mState, 0, mStateCount * sizeof(TI));
+    }
+    mImpulse = mRingFull;
+#endif
+};
+//MTK_ADDED>
+
 template<typename TC, typename TI, typename TO>
 void AudioResamplerDyn<TC, TI, TO>::Constants::set(
         int L, int halfNumCoefs, int inSampleRate, int outSampleRate)
@@ -174,6 +199,16 @@ AudioResamplerDyn<TC, TI, TO>::AudioResamplerDyn(
     // We reset mInSampleRate to 0, so setSampleRate() will calculate filters for
     // setSampleRate() for 1:1. (May be removed if precalculated filters are used.)
     mInSampleRate = 0;
+#ifdef MTK_AUDIO
+    TI test = 0.5;
+    if (test) { // float
+       mInFormat = AUDIO_FORMAT_PCM_FLOAT;
+       mOutFormat = AUDIO_FORMAT_PCM_FLOAT;
+    } else {
+       mInFormat = AUDIO_FORMAT_PCM_16_BIT;
+       mOutFormat = AUDIO_FORMAT_PCM_32_BIT;
+    }
+#endif
     mConstants.set(128, 8, mSampleRate, mSampleRate); // TODO: set better
 }
 
@@ -310,6 +345,7 @@ void AudioResamplerDyn<TC, TI, TO>::setSampleRate(int32_t inSampleRate)
             // 32b coefficients, 64 length
             useS32 = true;
             stopBandAtten = 98.;
+#ifndef MTK_AUDIO
             if (inSampleRate >= mSampleRate * 4) {
                 halfLength = 48;
             } else if (inSampleRate >= mSampleRate * 2) {
@@ -317,6 +353,16 @@ void AudioResamplerDyn<TC, TI, TO>::setSampleRate(int32_t inSampleRate)
             } else {
                 halfLength = 32;
             }
+#else
+            if (inSampleRate >= mSampleRate * 4) {
+                halfLength = 96;
+                tbwCheat = 1.1;
+            } else if (inSampleRate >= mSampleRate * 2) {
+                halfLength = 40;
+            } else {
+                halfLength = 48;
+            }
+#endif
         } else if (mFilterQuality == DYN_LOW_QUALITY) {
             // 16b coefficients, 16-32 length
             useS32 = false;
@@ -528,8 +574,30 @@ size_t AudioResamplerDyn<TC, TI, TO>::resample(TO* out, size_t outFrameCount,
             mBuffer.frameCount = inFrameCount;
             provider->getNextBuffer(&mBuffer);
             if (mBuffer.raw == NULL) {
+#ifdef MTK_AUDIO
+                // Reset buffer to prevent pop noise at the next buffer.
+                mInBuffer.reset();
+#ifdef DEBUG_AUDIO_PCM
+                const int SIZE = 256;
+                char fileName[SIZE];
+                sprintf(fileName, "%s_%p.pcm", gaf_resampler_in_pcm, provider);
+                AudioDump::threadDump(fileName, out, outFrameCount * mChannelCount * sizeof(TI),
+                    gaf_resampler_propty, mInFormat, mInSampleRate, mChannelCount);
+#endif
+#endif
                 goto resample_exit;
             }
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+            else {
+                const int SIZE = 256;
+                char fileName[SIZE];
+                sprintf(fileName, "%s_%p.pcm", gaf_resampler_in_pcm, provider);
+                AudioDump::threadDump(fileName, mBuffer.raw, mBuffer.frameCount * mChannelCount * sizeof(TI),
+                    gaf_resampler_propty, mInFormat, mInSampleRate, mChannelCount);
+            }
+#endif
+#endif
             inFrameCount -= mBuffer.frameCount;
             if (phaseFraction >= phaseWrapLimit) { // read in data
                 mInBuffer.template readAdvance<CHANNELS>(
@@ -595,6 +663,15 @@ done:
                     inputIndex, frameCount);  // must have been fully read.
             inputIndex = 0;
             provider->releaseBuffer(&mBuffer);
+#ifdef MTK_AUDIO
+#ifdef DEBUG_AUDIO_PCM
+            const int SIZE = 256;
+            char fileName[SIZE];
+            sprintf(fileName, "%s_%p.pcm", gaf_resampler_out_pcm, provider);
+            AudioDump::threadDump(fileName, out, outputIndex * sizeof(TO), gaf_resampler_propty,
+                mOutFormat, mSampleRate, mChannelCount);
+#endif
+#endif
             ALOG_ASSERT(mBuffer.frameCount == 0);
         }
     }
@@ -610,6 +687,15 @@ resample_exit:
     mPhaseFraction = phaseFraction;
     return outputIndex / OUTPUT_CHANNELS;
 }
+//<MTK_ADDED
+template<typename TC, typename TI, typename TO>
+void AudioResamplerDyn<TC, TI, TO>::ResetBuffer() {
+#ifdef MTK_AUDIO
+    mInBuffer.reset();
+#endif
+    return AudioResampler::ResetBuffer();
+}
+//MTK_ADDED>
 
 /* instantiate templates used by AudioResampler::create */
 template class AudioResamplerDyn<float, float, float>;

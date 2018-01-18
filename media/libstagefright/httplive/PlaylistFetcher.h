@@ -184,6 +184,11 @@ private:
 
     bool mHasMetadata;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    int32_t mWrongPlaylistCnt;
+    FILE *mLogFile;
+    void selectLiveSeqNumberForOrange(const int32_t firstSeqNumberInPlaylist,const int32_t lastSeqNumberInPlaylist);
+#endif
     // Set first to true if decrypting the first segment of a playlist segment. When
     // first is true, reset the initialization vector based on the available
     // information in the manifest; otherwise, use the initialization vector as

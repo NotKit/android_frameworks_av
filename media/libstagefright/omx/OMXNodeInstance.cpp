@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,12 +43,18 @@
 #include <media/stagefright/MediaErrors.h>
 #include <utils/misc.h>
 #include <utils/NativeHandle.h>
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <utils/Trace.h>
+#include <sys/time.h>
+#ifdef HAVE_AEE_FEATURE
+#include "aee.h"
+#endif
+#endif
 
 static const OMX_U32 kPortIndexInput = 0;
 static const OMX_U32 kPortIndexOutput = 1;
 
 #define CLOGW(fmt, ...) ALOGW("[%x:%s] " fmt, mNodeID, mName, ##__VA_ARGS__)
-
 #define CLOG_ERROR_IF(cond, fn, err, fmt, ...) \
     ALOGE_IF(cond, #fn "(%x:%s, " fmt ") ERROR: %s(%#x)", \
     mNodeID, mName, ##__VA_ARGS__, asString(err), err)
@@ -126,8 +137,15 @@ struct BufferMeta {
 
         // check component returns proper range
         sp<ABuffer> codec = getBuffer(header, false /* backup */, true /* limit */);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        if ((OMX_U8 *)mMem->pointer()) { // make sure non-null pointer
+            memcpy((OMX_U8 *)mMem->pointer() + header->nOffset, codec->data(), codec->size());
+        } else {
+            ALOGE("mMem->pointer() is NULL!");
+        }
+#else
         memcpy((OMX_U8 *)mMem->pointer() + header->nOffset, codec->data(), codec->size());
+#endif
     }
 
     void CopyToOMX(const OMX_BUFFERHEADERTYPE *header) {
@@ -167,6 +185,13 @@ struct BufferMeta {
         mNativeHandle = nativeHandle;
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    sp<IMemory> GetMem()
+    {
+        return mMem;
+    }
+#endif
+
     OMX_U32 getPortIndex() {
         return mPortIndex;
     }
@@ -188,6 +213,12 @@ private:
     BufferMeta(const BufferMeta &);
     BufferMeta &operator=(const BufferMeta &);
 };
+#ifdef MTK_AOSP_ENHANCEMENT
+sp<IMemory>  getIMemoryFromBufferMeta(OMX_PTR pAppPrivate) {
+    BufferMeta *buffer_meta = (BufferMeta *)pAppPrivate;
+    return buffer_meta->GetMem();
+}
+#endif
 
 // static
 OMX_CALLBACKTYPE OMXNodeInstance::kCallbacks = {
@@ -226,6 +257,8 @@ OMXNodeInstance::OMXNodeInstance(
     mMetadataType[1] = kMetadataBufferTypeInvalid;
     mSecureBufferType[0] = kSecureBufferTypeUnknown;
     mSecureBufferType[1] = kSecureBufferTypeUnknown;
+    mGraphicBufferEnabled[0] = false;
+    mGraphicBufferEnabled[1] = false;
     mIsSecure = AString(name).endsWith(".secure");
 }
 
@@ -350,6 +383,16 @@ status_t OMXNodeInstance::freeNode(OMXMaster *master) {
             LOG_ALWAYS_FATAL("unknown state %s(%#x).", asString(state), state);
             break;
     }
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    //binder die will cause fd and memory leak without freeBuffers
+    //ALOGD("[%x:%s:%zu] try to free active buffers at state %u", mNodeID, mName, mActiveBuffers.size(), state);
+    if( 0 < mActiveBuffers.size() )
+    {
+        ALOGD("[%x:%s:%u] free active buffers", mNodeID, mName, state);
+        freeActiveBuffers();
+    }
+#endif
 
     ALOGV("[%x:%s] calling destroyComponentInstance", mNodeID, mName);
     OMX_ERRORTYPE err = master->destroyComponentInstance(
@@ -561,6 +604,12 @@ status_t OMXNodeInstance::enableNativeBuffers(
                     enable ? kSecureBufferTypeNativeHandle : kSecureBufferTypeOpaque;
             } else if (mSecureBufferType[portIndex] == kSecureBufferTypeUnknown) {
                 mSecureBufferType[portIndex] = kSecureBufferTypeOpaque;
+            }
+        } else {
+            if (err == OMX_ErrorNone) {
+                mGraphicBufferEnabled[portIndex] = enable;
+            } else if (enable) {
+                mGraphicBufferEnabled[portIndex] = false;
             }
         }
     } else {
@@ -798,6 +847,13 @@ status_t OMXNodeInstance::useBuffer(
         return BAD_VALUE;
     }
 
+    if (mMetadataType[portIndex] == kMetadataBufferTypeInvalid
+            && mGraphicBufferEnabled[portIndex]) {
+        ALOGE("b/62948670");
+        android_errorWriteLog(0x534e4554, "62948670");
+        return INVALID_OPERATION;
+    }
+
     // metadata buffers are not connected cross process
     // use a backup buffer instead of the actual buffer
     BufferMeta *buffer_meta;
@@ -916,9 +972,17 @@ status_t OMXNodeInstance::useGraphicBuffer(
         return BAD_VALUE;
     }
     Mutex::Autolock autoLock(mLock);
+    if (!mGraphicBufferEnabled[portIndex]
+            || mMetadataType[portIndex] != kMetadataBufferTypeInvalid) {
+        // Report error if this is not in graphic buffer mode.
+        ALOGE("b/62948670");
+        android_errorWriteLog(0x534e4554, "62948670");
+        return INVALID_OPERATION;
+    }
 
     // See if the newer version of the extension is present.
     OMX_INDEXTYPE index;
+
     if (OMX_GetExtensionIndex(
             mHandle,
             const_cast<OMX_STRING>("OMX.google.android.index.useAndroidNativeBuffer2"),
@@ -1235,6 +1299,12 @@ status_t OMXNodeInstance::allocateSecureBuffer(
         return BAD_VALUE;
     }
 
+    if (mSecureBufferType[portIndex] == kSecureBufferTypeUnknown) {
+        ALOGE("b/63522818");
+        android_errorWriteLog(0x534e4554, "63522818");
+        return ERROR_UNSUPPORTED;
+    }
+
     BufferMeta *buffer_meta = new BufferMeta(size, portIndex);
 
     OMX_BUFFERHEADERTYPE *header;
@@ -1296,14 +1366,33 @@ status_t OMXNodeInstance::allocateBufferWithBackup(
         return BAD_VALUE;
     }
 
+    if (mSecureBufferType[portIndex] != kSecureBufferTypeUnknown) {
+        ALOGE("b/63522818");
+        android_errorWriteLog(0x534e4554, "63522818");
+        return ERROR_UNSUPPORTED;
+    }
+
     // metadata buffers are not connected cross process; only copy if not meta
     bool copy = mMetadataType[portIndex] == kMetadataBufferTypeInvalid;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    // When encoder with storeMetaDataInOutputBuffer, we need copyFromOmx!
+    // Narrow down the checking scope to MTK ENCODER.
+    bool outCopy = mMetadataType[portIndex] == kMetadataBufferTypeInvalid ||
+                   (mMetadataType[portIndex] == kMetadataBufferTypeNativeHandleSource &&
+                    NULL != strcasestr(mName, "ENCODER"));
+    BufferMeta *buffer_meta = new BufferMeta(
+            params, portIndex,
+            (portIndex == kPortIndexInput) && copy /* copyToOmx */,
+            (portIndex == kPortIndexOutput) && outCopy /* copyFromOmx */,
+            NULL /* data */);
+#else
     BufferMeta *buffer_meta = new BufferMeta(
             params, portIndex,
             (portIndex == kPortIndexInput) && copy /* copyToOmx */,
             (portIndex == kPortIndexOutput) && copy /* copyFromOmx */,
             NULL /* data */);
+#endif
 
     OMX_BUFFERHEADERTYPE *header;
 
@@ -1347,6 +1436,11 @@ status_t OMXNodeInstance::freeBuffer(
     OMX_BUFFERHEADERTYPE *header = findBufferHeader(buffer, portIndex);
     if (header == NULL) {
         ALOGE("b/25884056");
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef HAVE_AEE_FEATURE
+        aee_system_exception("OMXNodeInstance", NULL, DB_OPT_FTRACE, "findBufferHeader fail");
+#endif
+#endif
         return BAD_VALUE;
     }
     BufferMeta *buffer_meta = static_cast<BufferMeta *>(header->pAppPrivate);
@@ -1464,9 +1558,21 @@ void OMXNodeInstance::unbumpDebugLevel_l(size_t portIndex) {
     }
 }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+static int64_t getTickCountUs()
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (int64_t)(tv.tv_sec * 1000000LL + tv.tv_usec);
+}
+#endif
+
 status_t OMXNodeInstance::storeFenceInMeta_l(
         OMX_BUFFERHEADERTYPE *header, int fenceFd, OMX_U32 portIndex) {
     // propagate fence if component supports it; wait for it otherwise
+#ifdef MTK_AOSP_ENHANCEMENT
+    ATRACE_NAME("StoreFenceInMeta");
+#endif
     OMX_U32 metaSize = portIndex == kPortIndexInput ? header->nFilledLen : header->nAllocLen;
     if (mMetadataType[portIndex] == kMetadataBufferTypeANWBuffer
             && metaSize >= sizeof(VideoNativeMetadata)) {
@@ -1482,7 +1588,18 @@ status_t OMXNodeInstance::storeFenceInMeta_l(
     } else if (fenceFd >= 0) {
         CLOG_BUFFER(storeFenceInMeta, "waiting for fence %d", fenceFd);
         sp<Fence> fence = new Fence(fenceFd);
+#ifdef MTK_AOSP_ENHANCEMENT
+        int64_t startTime = getTickCountUs();
+        status_t ret = fence->wait(IOMX::kFenceTimeoutMs);
+        int64_t duration = getTickCountUs() - startTime;
+        //Log waning on long duration. 10ms is an empirical value.
+        if (duration >= 10000){
+            ALOGW("wait fence took %lld us", (long long)duration);
+        }
+        return ret;
+#else
         return fence->wait(IOMX::kFenceTimeoutMs);
+#endif
     }
     return OK;
 }
@@ -1895,7 +2012,12 @@ OMX_ERRORTYPE OMXNodeInstance::OnEmptyBufferDone(
     if (instance->mDying) {
         return OMX_ErrorNone;
     }
+    //fix google issue
+#ifdef MTK_AOSP_ENHANCEMENT
+    int fenceFd = instance->retrieveFenceFromMeta_l(pBuffer, kPortIndexInput);
+#else
     int fenceFd = instance->retrieveFenceFromMeta_l(pBuffer, kPortIndexOutput);
+#endif
     return instance->owner()->OnEmptyBufferDone(instance->nodeID(),
             instance->findBufferID(pBuffer), pBuffer, fenceFd);
 }
@@ -2002,6 +2124,11 @@ OMX::buffer_id OMXNodeInstance::findBufferID(OMX_BUFFERHEADERTYPE *bufferHeader)
     ssize_t index = mBufferHeaderToBufferID.indexOfKey(bufferHeader);
     if (index < 0) {
         CLOGW("findBufferID: bufferHeader %p not found", bufferHeader);
+#ifdef MTK_AOSP_ENHANCEMENT
+#ifdef HAVE_AEE_FEATURE
+        aee_system_exception("OMXNodeInstance", NULL, DB_OPT_DEFAULT, "findBufferID fail");
+#endif
+#endif
         return 0;
     }
     return mBufferHeaderToBufferID.valueAt(index);

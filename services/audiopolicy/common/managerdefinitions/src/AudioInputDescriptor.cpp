@@ -222,16 +222,30 @@ sp<AudioInputDescriptor> AudioInputCollection::getInputFromId(audio_port_handle_
     return inputDesc;
 }
 
-uint32_t AudioInputCollection::activeInputsCountOnDevices(audio_devices_t devices) const
+#ifdef MTK_AUDIO
+uint32_t AudioInputCollection::activeInputsCountOnDevices(audio_devices_t devices, bool ignoreVirtualInputs) const
+#else
+uint32_t AudioInputCollection::activeInputsCountOnDevices(audio_devices_t devices, bool ignoreVirtualInputs __unused) const
+#endif
 {
     uint32_t count = 0;
     for (size_t i = 0; i < size(); i++) {
         const sp<AudioInputDescriptor>  inputDescriptor = valueAt(i);
+#ifdef MTK_AUDIO
+        if (inputDescriptor->isActive() &&
+                ((devices == AUDIO_DEVICE_IN_DEFAULT) ||
+                 ((inputDescriptor->mDevice & devices & ~AUDIO_DEVICE_BIT_IN) != 0)) &&
+                (!ignoreVirtualInputs ||
+                 !is_virtual_input_device(inputDescriptor->mDevice))) {
+            count++;
+        }
+#else
         if (inputDescriptor->isActive() &&
                 ((devices == AUDIO_DEVICE_IN_DEFAULT) ||
                  ((inputDescriptor->mDevice & devices & ~AUDIO_DEVICE_BIT_IN) != 0))) {
             count++;
         }
+#endif
     }
     return count;
 }

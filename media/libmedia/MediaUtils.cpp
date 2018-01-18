@@ -23,7 +23,9 @@
 #include <unistd.h>
 
 #include "MediaUtils.h"
-
+#ifdef MTK_AOSP_ENHANCEMENT
+#include <string.h>
+#endif
 namespace android {
 
 void limitProcessMemory(
@@ -53,6 +55,16 @@ void limitProcessMemory(
         ALOGW("couldn't determine total RAM");
     }
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    if (maxMem < 262144000 && !strcmp(property, "ro.media.maxmem")) {
+        // set lower limit 256M for media.extractor process
+        // it consider gmo 512M project for low mem consideration
+        // Todo 256M maybe have risk for gmo 512M, it can adjust 256M to smaller
+        // if media extractor process allow
+        maxMem = 262144000;
+        ALOGV("maxMem: %zu too small, set to fixed 262144000 Bytes", maxMem);
+    }
+#endif
     int64_t propVal = property_get_int64(property, maxMem);
     if (propVal > 0 && uint64_t(propVal) <= SIZE_MAX) {
         maxMem = propVal;

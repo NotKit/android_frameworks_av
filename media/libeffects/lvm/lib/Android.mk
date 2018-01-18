@@ -175,6 +175,11 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/Reverb/src \
     $(LOCAL_PATH)/Common/lib \
     $(LOCAL_PATH)/Common/src
-
+ifeq ($(findstring MTK_AOSP_ENHANCEMENT,  $(MTK_GLOBAL_CFLAGS)),)
+LOCAL_CFLAGS += -DMTK_AOSP_ENHANCEMENT
+endif
+ifeq ($(MTK_AUDIO),yes)
+LOCAL_CFLAGS += -DMTK_AUDIO
+endif
 LOCAL_CFLAGS += -fvisibility=hidden
 include $(BUILD_STATIC_LIBRARY)

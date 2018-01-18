@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2009 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -61,6 +66,10 @@ public:
     MediaBuffer(const sp<GraphicBuffer>& graphicBuffer);
 
     MediaBuffer(const sp<ABuffer> &buffer);
+
+#ifdef MTK_AOSP_ENHANCEMENT
+    MediaBuffer(size_t size, sp<MetaData> metaData);
+#endif
 
     MediaBuffer(const sp<IMemory> &mem) :
         MediaBuffer((uint8_t *)mem->pointer() + sizeof(SharedControl), mem->size()) {
@@ -230,6 +239,13 @@ private:
          return reinterpret_cast<SharedControl *>(mMemory->pointer());
      }
 };
+
+#ifdef MTK_AOSP_ENHANCEMENT
+class MediaBufferSimpleObserver: public MediaBufferObserver {
+public:
+    virtual void signalBufferReturned(MediaBuffer *buffer);
+};
+#endif  // #ifndef MTK_AOSP_ENHANCEMENT
 
 }  // namespace android
 

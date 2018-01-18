@@ -16,6 +16,9 @@
 
 #define LOG_TAG "APM::AudioOutputDescriptor"
 //#define LOG_NDEBUG 0
+#ifdef MTK_AUDIO
+#define LOG_NDEBUG 0
+#endif
 
 #include <AudioPolicyInterface.h>
 #include "AudioOutputDescriptor.h"
@@ -36,12 +39,19 @@ AudioOutputDescriptor::AudioOutputDescriptor(const sp<AudioPort>& port,
     : mPort(port), mDevice(AUDIO_DEVICE_NONE),
       mClientInterface(clientInterface), mPatchHandle(AUDIO_PATCH_HANDLE_NONE), mId(0)
 {
+#ifdef MTK_AUDIO
+    mMutePrevDevice = AUDIO_DEVICE_NONE;
+    mOutputFirstActive = false;
+#endif
     // clear usage count for all stream types
     for (int i = 0; i < AUDIO_STREAM_CNT; i++) {
         mRefCount[i] = 0;
         mCurVolume[i] = -1.0;
         mMuteCount[i] = 0;
         mStopTime[i] = 0;
+#ifdef MTK_AUDIO
+        mMuteTid[i] = 0;
+#endif
     }
     for (int i = 0; i < NUM_STRATEGIES; i++) {
         mStrategyMutedByDevice[i] = false;
@@ -139,18 +149,27 @@ bool AudioOutputDescriptor::isFixedVolume(audio_devices_t device __unused)
 {
     return false;
 }
-
+#ifndef MTK_AUDIO
 bool AudioOutputDescriptor::setVolume(float volume,
                                       audio_stream_type_t stream,
                                       audio_devices_t device __unused,
                                       uint32_t delayMs,
                                       bool force)
+#else
+bool AudioOutputDescriptor::setVolume(float volume,
+                                      audio_stream_type_t stream,
+                                      audio_devices_t device __unused,
+                                      uint32_t delayMs __unused,
+                                      bool force)
+#endif
 {
     // We actually change the volume if:
     // - the float value returned by computeVolume() changed
     // - the force flag is set
     if (volume != mCurVolume[stream] || force) {
+#ifndef MTK_AUDIO
         ALOGV("setVolume() for stream %d, volume %f, delay %d", stream, volume, delayMs);
+#endif
         mCurVolume[stream] = volume;
         return true;
     }
@@ -372,7 +391,10 @@ bool SwAudioOutputDescriptor::setVolume(float volume,
                                         bool force)
 {
     bool changed = AudioOutputDescriptor::setVolume(volume, stream, device, delayMs, force);
-
+#ifdef MTK_AUDIO
+    if (changed || mRefCount[stream] || ((stream == AUDIO_STREAM_VOICE_CALL || stream == AUDIO_STREAM_BLUETOOTH_SCO)))
+    ALOGD("SwAudioOutputDescriptor::%s mIoHandle %d id %d change %d volume %f stream %d device 0x%x delayMs %d force %d", __FUNCTION__,mIoHandle ,getId() ,changed, volume, stream, device, delayMs, force);
+#endif
     if (changed) {
         // Force VOICE_CALL to track BLUETOOTH_SCO stream volume when bluetooth audio is
         // enabled

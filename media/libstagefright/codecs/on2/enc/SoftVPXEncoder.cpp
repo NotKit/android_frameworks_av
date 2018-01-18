@@ -793,9 +793,7 @@ void SoftVPXEncoder::onQueueFilled(OMX_U32 /* portIndex */) {
         if (inputBufferHeader->nTimeStamp > mLastTimestamp) {
             frameDuration = (uint32_t)(inputBufferHeader->nTimeStamp - mLastTimestamp);
         } else {
-            // Use default of 30 fps in case of 0 frame rate.
-            uint32_t framerate = mFramerate ?: (30 << 16);
-            frameDuration = (uint32_t)(((uint64_t)1000000 << 16) / framerate);
+            frameDuration = (uint32_t)(((uint64_t)1000000 << 16) / mFramerate);
         }
         mLastTimestamp = inputBufferHeader->nTimeStamp;
         codec_return = vpx_codec_encode(
@@ -847,11 +845,6 @@ void SoftVPXEncoder::onQueueFilled(OMX_U32 /* portIndex */) {
         inputBufferInfoQueue.erase(inputBufferInfoQueue.begin());
         notifyEmptyBufferDone(inputBufferHeader);
     }
-}
-
-void SoftVPXEncoder::onReset() {
-    releaseEncoder();
-    mLastTimestamp = 0x7FFFFFFFFFFFFFFFLL;
 }
 
 }  // namespace android

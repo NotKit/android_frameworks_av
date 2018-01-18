@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -778,7 +783,11 @@ void AudioResamplerOrder1::AsmStereo16Loop(int16_t *in, int32_t* maxOutPt, int32
 
 #endif  // ASM_ARM_RESAMP1
 
-
+//<MTK_ADDED
+void AudioResampler::ResetBuffer() {
+    mBuffer.frameCount = 0;
+}
+//MTK_ADDED>
 // ----------------------------------------------------------------------------
 
 } // namespace android

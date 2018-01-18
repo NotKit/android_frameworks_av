@@ -76,7 +76,11 @@ private:
     // with an in-memory MediaDataSource source on a Nexus 5. Beyond 2kb there was
     // no improvement.
     enum {
+#ifdef MTK_AOSP_ENHANCEMENT
+        kCacheSize = 2048 * 4,
+#else
         kCacheSize = 2048,
+#endif
     };
 
     sp<DataSource> mSource;
@@ -84,7 +88,11 @@ private:
     off64_t mCachedOffset;
     size_t mCachedSize;
     String8 mName;
+#ifdef MTK_AOSP_ENHANCEMENT
+    Mutex mLock;
 
+    virtual ssize_t readAt2(off64_t offset, void* data, size_t size);
+#endif
     DISALLOW_EVIL_CONSTRUCTORS(TinyCacheSource);
 };
 

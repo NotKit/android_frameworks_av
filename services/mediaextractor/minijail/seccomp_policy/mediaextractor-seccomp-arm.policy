@@ -37,6 +37,8 @@ geteuid32: 1
 getgid32: 1
 getegid32: 1
 getgroups32: 1
+gettimeofday: 1
+unlinkat: 1
 
 # for attaching to debuggerd on process crash
 sigaction: 1
@@ -45,3 +47,11 @@ socket: 1
 connect: 1
 fcntl64: 1
 rt_tgsigqueueinfo: 1
+setsockopt: 1
+
+# for audio TableOfContent thread setpriority
+ioprio_set: 1
+
+# for timing issue, defaultServiceManager call sleep(1) when
+# can not getContextObject
+nanosleep: 1

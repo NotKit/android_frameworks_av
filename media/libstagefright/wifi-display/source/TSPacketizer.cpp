@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright 2012, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -104,6 +109,11 @@ void TSPacketizer::Track::extractCSDIfNecessary() {
 
     if (!strcasecmp(mMIME.c_str(), MEDIA_MIMETYPE_VIDEO_AVC)
             || !strcasecmp(mMIME.c_str(), MEDIA_MIMETYPE_AUDIO_AAC)) {
+/*
+#ifdef MTK_VIDEO_HEVC_SUPPORT
+        || !strcasecmp(mMIME.c_str(), MEDIA_MIMETYPE_VIDEO_HEVC)) {
+#endif
+*/
         for (size_t i = 0;; ++i) {
             sp<ABuffer> csd;
             if (!mFormat->findBuffer(AStringPrintf("csd-%d", i).c_str(), &csd)) {
@@ -158,6 +168,10 @@ bool TSPacketizer::Track::isVideo() const {
 }
 
 bool TSPacketizer::Track::isH264() const {
+#ifdef MTK_VIDEO_HEVC_SUPPORT
+      return ( !strcasecmp(mMIME.c_str(), MEDIA_MIMETYPE_VIDEO_AVC))
+          ||( !strcasecmp(mMIME.c_str(), MEDIA_MIMETYPE_VIDEO_HEVC));
+#endif
     return !strcasecmp(mMIME.c_str(), MEDIA_MIMETYPE_VIDEO_AVC);
 }
 
@@ -412,6 +426,13 @@ ssize_t TSPacketizer::addTrack(const sp<AMessage> &format) {
         streamIDStart = 0xbd;
         streamIDStop = 0xbd;
     } else {
+#ifdef MTK_VIDEO_HEVC_SUPPORT
+    if (!strcasecmp(mime.c_str(), MEDIA_MIMETYPE_VIDEO_HEVC)) {
+        streamType = 0x24;
+        streamIDStart = 0xe0;
+        streamIDStop = 0xef;
+    } else
+#endif
         return ERROR_UNSUPPORTED;
     }
 
@@ -920,7 +941,11 @@ status_t TSPacketizer::packetize(
     *ptr++ = track->streamID();
     *ptr++ = PES_packet_length >> 8;
     *ptr++ = PES_packet_length & 0xff;
-    *ptr++ = 0x84;
+    if(track->isPCMAudio()){
+        *ptr++ = 0x8c;
+    }else{
+        *ptr++ = 0x84;
+    }
     *ptr++ = (PES_private_data_len > 0) ? 0x81 : 0x80;
 
     size_t headerLength = 0x05 + numStuffingBytes;

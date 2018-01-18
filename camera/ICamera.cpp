@@ -55,6 +55,7 @@ enum {
     SET_VIDEO_BUFFER_MODE,
     SET_VIDEO_BUFFER_TARGET,
     RELEASE_RECORDING_FRAME_HANDLE,
+    SET_METADATA_CALLBACK,
 };
 
 class BpCamera: public BpInterface<ICamera>
@@ -235,6 +236,17 @@ public:
         status_t ret = reply.readInt32();
         return ret;
     }
+//!++
+    status_t setMetadataCallback(sp<IMetadataCallbacks>& cb)
+    {
+        ALOGV("setMetadataCallbacks");
+        Parcel data, reply;
+        data.writeInterfaceToken(ICamera::getInterfaceDescriptor());
+        data.writeStrongBinder(IInterface::asBinder(cb));
+        remote()->transact(SET_METADATA_CALLBACK, data, &reply);
+        status_t ret = reply.readInt32();
+        return ret;
+    }
 
     // set preview/capture parameters - key/value pairs
     status_t setParameters(const String8& params)
@@ -256,6 +268,7 @@ public:
         remote()->transact(GET_PARAMETERS, data, &reply);
         return reply.readString8();
     }
+//!--
     virtual status_t sendCommand(int32_t cmd, int32_t arg1, int32_t arg2)
     {
         ALOGV("sendCommand");
@@ -416,6 +429,14 @@ status_t BnCamera::onTransact(
             reply->writeInt32(takePicture(msgType));
             return NO_ERROR;
         } break;
+//!++
+        case SET_METADATA_CALLBACK: {
+            ALOGV("SET_METADATA_CALLBACK");
+            CHECK_INTERFACE(ICamera, data, reply);
+            sp<IMetadataCallbacks> cb = interface_cast<IMetadataCallbacks>(data.readStrongBinder());
+            setMetadataCallback(cb);
+            return NO_ERROR;
+        } break;
         case SET_PARAMETERS: {
             ALOGV("SET_PARAMETERS");
             CHECK_INTERFACE(ICamera, data, reply);
@@ -429,6 +450,7 @@ status_t BnCamera::onTransact(
              reply->writeString8(getParameters());
             return NO_ERROR;
          } break;
+//!--
         case SEND_COMMAND: {
             ALOGV("SEND_COMMAND");
             CHECK_INTERFACE(ICamera, data, reply);

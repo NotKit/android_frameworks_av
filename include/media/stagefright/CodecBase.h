@@ -53,6 +53,9 @@ struct CodecBase : public AHandler, /* static */ ColorUtils {
         kWhatSignaledInputEOS    = 'seos',
         kWhatBuffersAllocated    = 'allc',
         kWhatOutputFramesRendered = 'outR',
+#ifdef MTK_AOSP_ENHANCEMENT
+        kWhatSubmitOutputMetaBuffers = 'somb',
+#endif
     };
 
     enum {

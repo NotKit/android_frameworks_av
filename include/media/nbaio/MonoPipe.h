@@ -100,6 +100,11 @@ private:
     ExtendedTimestampSingleStateQueue::Shared      mTimestampShared;
     ExtendedTimestampSingleStateQueue::Mutator     mTimestampMutator;
     ExtendedTimestampSingleStateQueue::Observer    mTimestampObserver;
+
+//<MTK_AOSP_ENHANCEMENT
+public:
+            void    flush();
+//MTK_AOSP_ENHANCEMENT>
 };
 
 }   // namespace android

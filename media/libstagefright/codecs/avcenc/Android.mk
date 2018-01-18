@@ -28,6 +28,6 @@ LOCAL_SANITIZE := signed-integer-overflow
 
 LOCAL_LDFLAGS := -Wl,-Bsymbolic
 
-include $(BUILD_SHARED_LIBRARY)
+include $(MTK_SHARED_LIBRARY)
 
 #endif

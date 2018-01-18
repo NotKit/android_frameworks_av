@@ -103,6 +103,9 @@ protected:
     struct TOCEntry {
         off64_t mPageOffset;
         int64_t mTimeUs;
+#ifdef MTK_AOSP_ENHANCEMENT
+        uint64_t mGranulePos;
+#endif
     };
 
     sp<DataSource> mSource;
@@ -411,6 +414,12 @@ status_t MyOggExtractor::findPrevGranulePosition(
 }
 
 status_t MyOggExtractor::seekToTime(int64_t timeUs) {
+#ifdef MTK_AOSP_ENHANCEMENT
+    // if seek to 0, should to seek to offset 0
+    if (0 == timeUs) {
+        return seekToOffset(mFirstDataOffset);
+    }
+#endif
     timeUs -= mSeekPreRollUs;
     if (timeUs < 0) {
         timeUs = 0;
@@ -469,6 +478,9 @@ status_t MyOggExtractor::seekToOffset(off64_t offset) {
     status_t err = findNextPage(offset, &pageOffset);
 
     if (err != OK) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("seekToOffset(%lld), findNextPage failed!", (long long)offset);
+#endif
         return err;
     }
 
@@ -496,9 +508,13 @@ ssize_t MyOggExtractor::readPage(off64_t offset, Page *page) {
     ssize_t n;
     if ((n = mSource->readAt(offset, header, sizeof(header)))
             < (ssize_t)sizeof(header)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("failed to read %zu bytes at offset %#016llx, got %zd bytes",
+                sizeof(header), (long long)offset, n);
+#else
         ALOGV("failed to read %zu bytes at offset %#016llx, got %zd bytes",
                 sizeof(header), (long long)offset, n);
-
+#endif
         if (n < 0) {
             return n;
         } else if (n == 0) {
@@ -509,12 +525,17 @@ ssize_t MyOggExtractor::readPage(off64_t offset, Page *page) {
     }
 
     if (memcmp(header, "OggS", 4)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("readPage(): No OggS in Ogg Page Hearder!");
+#endif
         return ERROR_MALFORMED;
     }
 
     if (header[4] != 0) {
         // Wrong version.
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("readPage(): invalid version in Ogg Page Hearder!");
+#endif
         return ERROR_UNSUPPORTED;
     }
 
@@ -522,6 +543,9 @@ ssize_t MyOggExtractor::readPage(off64_t offset, Page *page) {
 
     if (page->mFlags & ~7) {
         // Only bits 0-2 are defined in version 0.
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("readPage(): invalid header flag in Ogg Page Hearder!(flag=%d)", page->mFlags);
+#endif
         return ERROR_MALFORMED;
     }
 
@@ -539,6 +563,9 @@ ssize_t MyOggExtractor::readPage(off64_t offset, Page *page) {
     if (mSource->readAt(
                 offset + sizeof(header), page->mLace, page->mNumSegments)
             < (ssize_t)page->mNumSegments) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("readPage(): failed to read segment number, NumSegments=%d", page->mNumSegments);
+#endif
         return ERROR_IO;
     }
 
@@ -741,6 +768,11 @@ status_t MyOggExtractor::_readNextPacket(MediaBuffer **out, bool calcVorbisTimes
 
             mNextLaceIndex = i;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (!gotFullPacket) {
+                ALOGD("_readNextPacket(): Can not get full packet, need to parse next page!!!");
+            }
+#endif
             if (gotFullPacket) {
                 // We've just read the entire packet.
 
@@ -787,9 +819,11 @@ status_t MyOggExtractor::_readNextPacket(MediaBuffer **out, bool calcVorbisTimes
                 buffer->release();
                 buffer = NULL;
             }
-
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGE("readPage returned %zd", n);
+#else
             ALOGV("readPage returned %zd", n);
-
+#endif
             return n < 0 ? n : (status_t)ERROR_END_OF_STREAM;
         }
 
@@ -811,7 +845,13 @@ status_t MyOggExtractor::_readNextPacket(MediaBuffer **out, bool calcVorbisTimes
             if ((mCurrentPage.mFlags & 1) == 0) {
                 // This page does not continue the packet, i.e. the packet
                 // is already complete.
-
+#ifdef MTK_AOSP_ENHANCEMENT
+                // Priv page tell us that next page contain the packet, which is a part of its.
+                // But current page tell us that it is an independent one.
+                // So it must be an error against to ogg spec.
+                ALOGE("_readNextPacket(): a new package different form last page. time=%lld", (long long)timeUs);
+                return ERROR_MALFORMED;
+#else
                 if (timeUs >= 0) {
                     buffer->meta_data()->setInt64(kKeyTime, timeUs);
                 }
@@ -823,6 +863,7 @@ status_t MyOggExtractor::_readNextPacket(MediaBuffer **out, bool calcVorbisTimes
                 *out = buffer;
 
                 return OK;
+#endif
             }
         }
     }
@@ -837,6 +878,9 @@ status_t MyOggExtractor::init() {
     for (size_t i = 0; i < mNumHeaders; ++i) {
         // ignore timestamp for configuration packets
         if ((err = _readNextPacket(&packet, /* calcVorbisTimestamp = */ false)) != OK) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGE("init(): _readNextPacket() failed!(i=%zu)", i);
+#endif
             return err;
         }
         ALOGV("read packet of size %zu\n", packet->range_length());
@@ -844,6 +888,9 @@ status_t MyOggExtractor::init() {
         packet->release();
         packet = NULL;
         if (err != OK) {
+#ifdef MTK_AOSP_ENHANCEMENT
+            ALOGE("init(): verifyHeader() failed! (i=%zu, type=%zu)", i, (i*2+1));
+#endif
             return err;
         }
     }
@@ -883,7 +930,9 @@ void MyOggExtractor::buildTableOfContents() {
 
         entry.mPageOffset = offset;
         entry.mTimeUs = getTimeUsOfGranule(page.mGranulePosition);
-
+#ifdef MTK_AOSP_ENHANCEMENT
+        entry.mGranulePos = page.mGranulePosition;
+#endif
         offset += (size_t)pageSize;
     }
 
@@ -1088,6 +1137,9 @@ status_t MyVorbisExtractor::verifyHeader(
     size_t size = buffer->range_length();
 
     if (size < 7 || data[0] != type || memcmp(&data[1], "vorbis", 6)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("verifyHeader(): error buffer!(type=%d, size=%zu, data[0]=%d)", type, size, data[0]);
+#endif
         return ERROR_MALFORMED;
     }
 
@@ -1107,6 +1159,9 @@ status_t MyVorbisExtractor::verifyHeader(
     oggpack_readinit(&bits, &ref);
 
     if (oggpack_read(&bits, 8) != type) {
+#ifdef MTK_AOSP_ENHANCEMENT
+        ALOGE("verifyHeader(): oggpack_read() failed!(type=%d)", type);
+#endif
         return ERROR_MALFORMED;
     }
     for (size_t i = 0; i < 6; ++i) {
@@ -1117,6 +1172,9 @@ status_t MyVorbisExtractor::verifyHeader(
         case 1:
         {
             if (0 != _vorbis_unpack_info(&mVi, &bits)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGE("verifyHeader(): _vorbis_unpack_info() failed!(type=%d)", type);
+#endif
                 return ERROR_MALFORMED;
             }
 
@@ -1146,6 +1204,9 @@ status_t MyVorbisExtractor::verifyHeader(
         case 3:
         {
             if (0 != _vorbis_unpack_comment(&mVc, &bits)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGE("verifyHeader(): _vorbis_unpack_comment() failed!(type=%d)", type);
+#endif
                 return ERROR_MALFORMED;
             }
 
@@ -1156,6 +1217,9 @@ status_t MyVorbisExtractor::verifyHeader(
         case 5:
         {
             if (0 != _vorbis_unpack_books(&mVi, &bits)) {
+#ifdef MTK_AOSP_ENHANCEMENT
+                ALOGE("verifyHeader(): _vorbis_unpack_books() failed!(type=%d)", type);
+#endif
                 return ERROR_MALFORMED;
             }
 
@@ -1325,9 +1389,19 @@ OggExtractor::OggExtractor(const sp<DataSource> &source)
             mImpl = new MyOpusExtractor(mDataSource);
         }
         mInitCheck = mImpl->seekToOffset(0);
+#ifdef MTK_AOSP_ENHANCEMENT
+        if (mInitCheck != OK) {
+            ALOGE("OggExtractor(): seekToOffset(0) failed!");
+        }
+#endif
 
         if (mInitCheck == OK) {
             mInitCheck = mImpl->init();
+#ifdef MTK_AOSP_ENHANCEMENT
+            if (mInitCheck != OK) {
+                ALOGE("OggExtractor(): init() failed!");
+            }
+#endif
             if (mInitCheck == OK) {
                 break;
             }

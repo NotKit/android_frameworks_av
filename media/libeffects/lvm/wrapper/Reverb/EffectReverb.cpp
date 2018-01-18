@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2010-2010 NXP Software
  * Copyright (C) 2009 The Android Open Source Project
  *
@@ -271,7 +276,14 @@ extern "C" int EffectCreate(const effect_uuid_t *uuid,
     // Allocate memory for reverb process (*2 is for STEREO)
     pContext->InFrames32  = (LVM_INT32 *)malloc(LVREV_MAX_FRAME_SIZE * sizeof(LVM_INT32) * 2);
     pContext->OutFrames32 = (LVM_INT32 *)malloc(LVREV_MAX_FRAME_SIZE * sizeof(LVM_INT32) * 2);
-
+    #ifdef MTK_AUDIO
+    if(pContext->OutFrames32 != NULL){
+        memset(pContext->OutFrames32, 0, LVREV_MAX_FRAME_SIZE * sizeof(LVM_INT32) * 2);
+    } else {
+        pContext->OutFrames32 = NULL;
+    }
+    ALOGW("EffectCreate-Reverb: %p, InFrames: %p, OutFrames: %p",pContext, pContext->InFrames32, pContext->OutFrames32);
+    #endif
     ALOGV("\tEffectCreate %p, size %zu", pContext, sizeof(ReverbContext));
     ALOGV("\tEffectCreate end\n");
     return 0;
@@ -290,8 +302,29 @@ extern "C" int EffectRelease(effect_handle_t handle){
     fclose(pContext->PcmInPtr);
     fclose(pContext->PcmOutPtr);
     #endif
-    free(pContext->InFrames32);
-    free(pContext->OutFrames32);
+
+    if (pContext->InFrames32 != NULL)
+    {
+        ALOGW("EffectRelease-Reverb: %p, InFrames: %p",pContext, pContext->InFrames32);
+        free(pContext->InFrames32);
+        pContext->InFrames32 = NULL;
+    }
+    else
+    {
+        ALOGW("EffectRelease-Reverb: %p, InFrames is NULL", pContext);
+    }
+
+    if(pContext->OutFrames32 != NULL)
+    {
+        ALOGW("EffectRelease-Reverb: %p, OutFrames: %p",pContext, pContext->OutFrames32);
+        free(pContext->OutFrames32);
+        pContext->OutFrames32 = NULL;
+    }
+    else
+    {
+        ALOGW("EffectRelease-Reverb: %p, OutFrames is NULL", pContext);
+    }
+
     Reverb_free(pContext);
     delete pContext;
     return 0;
@@ -420,6 +453,20 @@ int process( LVM_INT16     *pIn,
     LVREV_ReturnStatus_en   LvmStatus = LVREV_SUCCESS;              /* Function call status */
     LVM_INT16 *OutFrames16;
 
+#ifdef MTK_AOSP_ENHANCEMENT
+    // added by HP Cheng to check the input buffer size to exceed internal buffer
+    // input memory size requirement: frameCount * samplesPerFrame * 2 (bytes)
+    // output memory size requirement: frameCount * 2 * 2 (bytes)
+    {
+        int allocatedInputSize = LVREV_MAX_FRAME_SIZE * sizeof(LVM_INT32) * 2;
+        int allocatedOutputSize = LVREV_MAX_FRAME_SIZE * sizeof(LVM_INT32) * 2;
+        if( (frameCount * samplesPerFrame * 2 > allocatedInputSize) ||
+                (frameCount * 2 * 2 > allocatedOutputSize)) {
+                ALOGE("Error: frame count exceeds allocated memory");
+            return 0;
+        }
+    }
+#endif
 
     // Check that the input is either mono or stereo
     if (pContext->config.inputCfg.channels == AUDIO_CHANNEL_OUT_STEREO) {
@@ -451,8 +498,8 @@ int process( LVM_INT16     *pIn,
     // Convert to Input 32 bits
     if (pContext->auxiliary) {
         for(int i=0; i<frameCount*samplesPerFrame; i++){
-            pContext->InFrames32[i] = (LVM_INT32)pIn[i]<<8;
-        }
+                pContext->InFrames32[i] = (LVM_INT32)pIn[i]<<8;
+            }
     } else {
         // insert reverb input is always stereo
         for (int i = 0; i < frameCount; i++) {
@@ -485,7 +532,7 @@ int process( LVM_INT16     *pIn,
             OutFrames16[i] = clamp16(pContext->OutFrames32[i]>>8);
         }
     } else {
-        for (int i=0; i < frameCount*2; i++) { //always stereo here
+       for (int i=0; i < frameCount*2; i++) { //always stereo here
             OutFrames16[i] = clamp16((pContext->OutFrames32[i]>>8) + (LVM_INT32)pIn[i]);
         }
 
@@ -498,7 +545,7 @@ int process( LVM_INT16     *pIn,
             LVM_INT32 vr = (LVM_INT32)pContext->prevRightVolume << 16;
             LVM_INT32 incr = (((LVM_INT32)pContext->rightVolume << 16) - vr) / frameCount;
 
-            for (int i = 0; i < frameCount; i++) {
+            for (int i = 0; i < frameCount; i++){
                 OutFrames16[2*i] =
                         clamp16((LVM_INT32)((vl >> 16) * OutFrames16[2*i]) >> 12);
                 OutFrames16[2*i+1] =
@@ -515,9 +562,9 @@ int process( LVM_INT16     *pIn,
                 pContext->rightVolume != REVERB_UNIT_VOLUME) {
                 for (int i = 0; i < frameCount; i++) {
                     OutFrames16[2*i] =
-                            clamp16((LVM_INT32)(pContext->leftVolume * OutFrames16[2*i]) >> 12);
+                        clamp16((LVM_INT32)(pContext->leftVolume * OutFrames16[2*i]) >> 12);
                     OutFrames16[2*i+1] =
-                            clamp16((LVM_INT32)(pContext->rightVolume * OutFrames16[2*i+1]) >> 12);
+                        clamp16((LVM_INT32)(pContext->rightVolume * OutFrames16[2*i+1]) >> 12);
                 }
             }
             pContext->prevLeftVolume = pContext->leftVolume;
@@ -1722,8 +1769,14 @@ int Reverb_getParameter(ReverbContext *pContext,
             break;
         case REVERB_PARAM_REFLECTIONS_LEVEL:
             *(uint16_t *)pValue = 0;
+#ifdef MTK_AOSP_ENHANCEMENT
+            break;
+#endif
         case REVERB_PARAM_REFLECTIONS_DELAY:
             *(uint32_t *)pValue = 0;
+#ifdef MTK_AOSP_ENHANCEMENT
+            break;
+#endif
         case REVERB_PARAM_REVERB_DELAY:
             *(uint32_t *)pValue = 0;
             break;
@@ -1988,9 +2041,9 @@ int Reverb_command(effect_handle_t  self,
             //ALOGV("\tReverb_command cmdCode Case: "
             //        "EFFECT_CMD_GET_PARAM start");
             effect_param_t *p = (effect_param_t *)pCmdData;
+
             if (SIZE_MAX - sizeof(effect_param_t) < (size_t)p->psize) {
-                android_errorWriteLog(0x534e4554, "26347509");
-                return -EINVAL;
+              return -EINVAL;
             }
             if (pCmdData == NULL || cmdSize < sizeof(effect_param_t) ||
                     cmdSize < (sizeof(effect_param_t) + p->psize) ||
@@ -2133,6 +2186,17 @@ int Reverb_command(effect_handle_t  self,
         //ALOGV("\tReverb_command cmdCode Case: "
         //        "EFFECT_CMD_SET_DEVICE/EFFECT_CMD_SET_VOLUME/EFFECT_CMD_SET_AUDIO_MODE start");
             break;
+
+#ifdef MTK_AOSP_ENHANCEMENT
+        case EFFECT_CMD_CLEARBUF:
+        {
+            LVREV_ReturnStatus_en lstatus_c = LVREV_SUCCESS;
+            lstatus_c = LVREV_ClearAudioBuffers(pContext->hInstance);
+            if (lstatus_c != LVREV_SUCCESS)
+                return -EINVAL;
+            break;
+        }
+#endif
 
         default:
             ALOGV("\tLVM_ERROR : Reverb_command cmdCode Case: "

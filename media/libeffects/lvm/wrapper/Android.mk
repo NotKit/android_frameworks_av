@@ -27,6 +27,16 @@ LOCAL_C_INCLUDES += \
 	$(LOCAL_PATH)/../lib/Bundle/lib/ \
 	$(call include-path-for, audio-effects)
 
+ifeq ($(findstring MTK_AOSP_ENHANCEMENT,  $(MTK_GLOBAL_CFLAGS)),)
+LOCAL_CFLAGS += -DMTK_AOSP_ENHANCEMENT
+endif
+
+ifeq ($(MTK_AUDIO),yes)
+LOCAL_CFLAGS += -DMTK_AUDIO
+LOCAL_C_INCLUDES+= \
+   $(TOP)/$(MTK_PATH_SOURCE)/hardware/audio/common/include
+endif
+
 include $(BUILD_SHARED_LIBRARY)
 
 
@@ -55,5 +65,10 @@ LOCAL_C_INCLUDES += \
     $(LOCAL_PATH)/../lib/Common/lib/ \
     $(LOCAL_PATH)/../lib/Reverb/lib/ \
     $(call include-path-for, audio-effects)
+ifeq ($(MTK_AUDIO),yes)
+LOCAL_CFLAGS += -DMTK_AUDIO
+LOCAL_C_INCLUDES+= \
+   $(TOP)/$(MTK_PATH_SOURCE)/hardware/audio/common/include
+endif
 
 include $(BUILD_SHARED_LIBRARY)

@@ -23,7 +23,11 @@
 #include <cutils/misc.h>
 #include <media/AudioEffect.h>
 #include <system/audio.h>
+#ifdef MTK_AUDIO
+#include <hardware/audio_effect_mtk.h>
+#else
 #include <hardware/audio_effect.h>
+#endif
 #include <utils/Vector.h>
 #include <utils/SortedVector.h>
 

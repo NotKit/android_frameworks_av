@@ -1,4 +1,9 @@
 /*
+* Copyright (C) 2014 MediaTek Inc.
+* Modification based on code covered by the mentioned copyright
+* and/or permission notice(s).
+*/
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -165,6 +170,10 @@ private:
     // Return the estimated CPU load for specific resampler in MHz.
     // The absolute number is irrelevant, it's the relative values that matter.
     static uint32_t qualityMHz(src_quality quality);
+public:
+    //<MTK_AUDIO_ADD
+    virtual void ResetBuffer();
+    //MTK_AUDIO_ADD>
 };
 
 // ----------------------------------------------------------------------------
